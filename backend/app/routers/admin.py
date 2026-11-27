@@ -13,7 +13,7 @@ from ..config import now_local
 from ..db import get_session
 from ..models import (
     CATEGORIES, ROLES, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
-    PollSchedule,
+    PollSchedule, PollSwitch,
     ScheduleRun, UserPlantAccess,
 )
 from ..plant_keys import encrypt, hint as key_hint
@@ -21,6 +21,7 @@ from ..poller import poll_endpoint
 from ..scheduler import next_runs
 from .auth import user_out
 from .data import plant_out
+from ..switches import load_switches, off_reason
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -237,6 +238,82 @@ async def poll_now(mnem: str, category: str | None = None, admin: AppUser = Depe
     return {"attempts": dict(zip(cats, ids))}
 
 
+# ---------------------------------------------------------------- polling switches
+class SwitchIn(BaseModel):
+    enabled: bool
+
+
+async def _set_switch(s: AsyncSession, admin: AppUser, key: str, enabled: bool):
+    row = await s.get(PollSwitch, key)
+    before = row.enabled if row else True
+    if row is None:
+        row = PollSwitch(key=key)
+        s.add(row)
+    row.enabled, row.updated_at, row.updated_by = enabled, now_local(), admin.id
+    await audit(s, admin, "polling.fleet" if key == "fleet" else "polling.type", "poll_switch", key,
+                {"enabled": before}, {"enabled": enabled})
+
+
+@router.get("/polling")
+async def get_polling(admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    sw = await load_switches(s)
+    rows = {r.key: r for r in (await s.execute(select(PollSwitch))).scalars().all()}
+    meta = {k: {"updated_at": r.updated_at, "updated_by": r.updated_by} for k, r in rows.items()}
+    return {"fleet": sw.fleet, "types": sw.types, "changes": meta}
+
+
+@router.put("/polling/fleet")
+async def set_fleet_polling(body: SwitchIn, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    """Level 1: pause or resume all scheduled polling."""
+    await _set_switch(s, admin, "fleet", body.enabled)
+    await s.commit()
+    return await get_polling(admin, s)
+
+
+@router.put("/polling/types/{category}")
+async def set_type_polling(category: str, body: SwitchIn, admin: AppUser = Depends(require_admin),
+                           s: AsyncSession = Depends(get_session)):
+    """Level 2: pause or resume one endpoint type (e.g. MMF) for every plant."""
+    if category not in CATEGORIES:
+        raise HTTPException(404, "Unknown endpoint type")
+    await _set_switch(s, admin, f"type:{category}", body.enabled)
+    await s.commit()
+    return await get_polling(admin, s)
+
+
+async def _plant(s: AsyncSession, mnem: str) -> Plant:
+    p = (await s.execute(select(Plant).where(Plant.mnemonic == mnem.lower()))).scalar_one_or_none()
+    if p is None:
+        raise HTTPException(404, "Plant not found")
+    return p
+
+
+@router.put("/plants/{mnem}/polling")
+async def set_plant_polling(mnem: str, body: SwitchIn, admin: AppUser = Depends(require_admin),
+                            s: AsyncSession = Depends(get_session)):
+    """Level 3: pause or resume every endpoint of one plant."""
+    p = await _plant(s, mnem)
+    before, p.polling_enabled, p.updated_at = p.polling_enabled, body.enabled, now_local()
+    await audit(s, admin, "polling.plant", "plant", p.mnemonic, {"enabled": before}, {"enabled": body.enabled})
+    await s.commit()
+    return plant_out(p, admin=True, sw=await load_switches(s))
+
+
+@router.put("/plants/{mnem}/endpoints/{category}/polling")
+async def set_endpoint_polling(mnem: str, category: str, body: SwitchIn, admin: AppUser = Depends(require_admin),
+                               s: AsyncSession = Depends(get_session)):
+    """Level 4: pause or resume one endpoint of one plant."""
+    p = await _plant(s, mnem)
+    ep = next((e for e in p.endpoints if e.category == category), None)
+    if ep is None:
+        raise HTTPException(404, "This plant has no such endpoint")
+    before, ep.enabled, p.updated_at = ep.enabled, body.enabled, now_local()
+    await audit(s, admin, "polling.endpoint", "plant_endpoint", f"{p.mnemonic}/{category}",
+                {"enabled": before}, {"enabled": body.enabled})
+    await s.commit()
+    return plant_out(p, admin=True, sw=await load_switches(s))
+
+
 @router.post("/plants/{mnem}/test")
 async def test_plant(mnem: str, category: str | None = None, admin: AppUser = Depends(require_admin),
                      s: AsyncSession = Depends(get_session)):
@@ -246,6 +323,7 @@ async def test_plant(mnem: str, category: str | None = None, admin: AppUser = De
     if p is None:
         raise HTTPException(404, "Plant not found")
     eps = [e for e in p.endpoints if category is None or e.category == category]
+    sw = await load_switches(s)
     if not eps:
         raise HTTPException(400, "No matching endpoint")
     now = now_local()
@@ -273,7 +351,7 @@ async def test_plant(mnem: str, category: str | None = None, admin: AppUser = De
         else:
             verdict, reason = "pass", "Reachable and compliant with rev5"
         results.append({
-            "category": e.category, "url": e.url, "polled": e.enabled, "verdict": verdict, "reason": reason,
+            "category": e.category, "url": e.url, "polled": off_reason(sw, p, e) is None, "verdict": verdict, "reason": reason,
             "http_status": a.http_status if a else None, "latency_ms": a.latency_ms if a else None,
             "bytes": a.bytes if a else None, "attempt_id": aid, "tested_at": a.started_at if a else now,
             "major": [f.message for f in majors], "minor": [f.message for f in minors],

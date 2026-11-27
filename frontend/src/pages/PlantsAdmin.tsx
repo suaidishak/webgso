@@ -1,12 +1,64 @@
 import { Fragment, useEffect, useState } from "react";
 import { api, CATS, CAT_LABEL, fmt } from "../api";
 
-type Endpoint = { category: string; url: string; enabled: boolean; note: string | null };
+type Endpoint = { category: string; url: string; enabled: boolean; note: string | null; polled?: boolean; off_reason?: string | null };
 type PlantRow = {
   mnemonic: string; name: string; capacity_mw: number | null; mmf_station_count: number | null; status: string;
   notes: string | null; endpoints: Endpoint[]; auth_method: string; auth_param_name: string | null;
-  has_api_key: boolean; api_key_hint: string | null; updated_at: string | null;
+  has_api_key: boolean; api_key_hint: string | null; updated_at: string | null; polling_enabled: boolean;
 };
+type Polling = { fleet: boolean; types: Record<string, boolean> };
+
+export function Switch({ on, onChange, label, disabled, title }: { on: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean; title?: string }) {
+  return (
+    <label className={`switch ${on ? "on" : ""} ${disabled ? "dis" : ""}`} title={title}>
+      <input type="checkbox" role="switch" checked={on} disabled={disabled} onChange={e => onChange(e.target.checked)} />
+      <span className="track"><span className="knob" /></span>
+      {label && <span className="switch-label">{label}</span>}
+    </label>
+  );
+}
+
+function PollingPanel({ polling, onChange }: { polling: Polling; onChange: (p: Polling) => void }) {
+  const [confirm, setConfirm] = useState(false);
+  const [err, setErr] = useState("");
+  const setFleet = async (enabled: boolean) => {
+    setErr(""); setConfirm(false);
+    try { onChange(await api("/admin/polling/fleet", { method: "PUT", body: { enabled } })); } catch (e: any) { setErr(e.message); }
+  };
+  const setType = async (c: string, enabled: boolean) => {
+    setErr("");
+    try { onChange(await api(`/admin/polling/types/${c}`, { method: "PUT", body: { enabled } })); } catch (e: any) { setErr(e.message); }
+  };
+  return (
+    <div className={`card polling ${polling.fleet ? "" : "paused"}`}>
+      <div className="polling-fleet">
+        <div>
+          <b>Fleet polling</b>
+          <div className="small muted">{polling.fleet ? "Scheduled polling is running for every plant." : "All scheduled polling is paused. Tests and Poll now still work."}</div>
+        </div>
+        {confirm ? (
+          <span className="actions">
+            <span className="small">Pause polling for every plant?</span>
+            <button className="danger-fill" onClick={() => setFleet(false)}>Pause all</button>
+            <button className="ghost" onClick={() => setConfirm(false)}>Cancel</button>
+          </span>
+        ) : (
+          <Switch on={polling.fleet} label={polling.fleet ? "On" : "Paused"} onChange={v => (v ? setFleet(true) : setConfirm(true))} />
+        )}
+      </div>
+      <div className="polling-types">
+        <span className="small muted">Endpoint types, for all plants:</span>
+        {CATS.map(c => (
+          <Switch key={c} on={polling.types[c] !== false} label={CAT_LABEL[c]} disabled={!polling.fleet}
+            title={polling.fleet ? `Pause or resume ${CAT_LABEL[c]} for every plant` : "Fleet polling is paused"}
+            onChange={v => setType(c, v)} />
+        ))}
+      </div>
+      {err && <div className="error small">{err}</div>}
+    </div>
+  );
+}
 
 const DEFAULT_PATHS: Record<string, string> = {
   rolling: "forecast/rolling", dayahead: "forecast/dayahead", weekahead: "forecast/weekahead",
@@ -95,7 +147,19 @@ export function PlantsList() {
   const [deleting, setDeleting] = useState<PlantRow | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const { tests, test, err } = useTests();
-  const load = () => api<PlantRow[]>("/plants").then(setRows);
+  const [polling, setPolling] = useState<Polling | null>(null);
+  const [toggleErr, setToggleErr] = useState("");
+  const load = () => { api<PlantRow[]>("/plants").then(setRows); api<Polling>("/admin/polling").then(setPolling); };
+  const replaceRow = (p: PlantRow) => setRows(rs => rs && rs.map(r => (r.mnemonic === p.mnemonic ? p : r)));
+  const togglePlant = async (p: PlantRow, enabled: boolean) => {
+    setToggleErr("");
+    try { replaceRow(await api(`/admin/plants/${p.mnemonic}/polling`, { method: "PUT", body: { enabled } })); } catch (e: any) { setToggleErr(e.message); }
+  };
+  const toggleEndpoint = async (p: PlantRow, c: string, enabled: boolean) => {
+    setToggleErr("");
+    try { replaceRow(await api(`/admin/plants/${p.mnemonic}/endpoints/${c}/polling`, { method: "PUT", body: { enabled } })); } catch (e: any) { setToggleErr(e.message); }
+  };
+  const onPolling = (pl: Polling) => { setPolling(pl); api<PlantRow[]>("/plants").then(setRows); };
   const testPlant = (p: PlantRow) => { setOpen(o => ({ ...o, [p.mnemonic]: true })); return test(p.mnemonic, p.endpoints.map(e => e.category)); };
   const testAll = async () => { for (const p of shown) await testPlant(p); };
   useEffect(() => { load(); }, []);
@@ -111,19 +175,22 @@ export function PlantsList() {
         <button className="ghost" onClick={testAll}>Test all plants</button>
         <a className="button" href="#/admin/plants/new">Add plant</a>
       </div>
-      <p className="muted small">The poller reads this registry on every tick, so a new or edited plant is picked up within 30 seconds. API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule.</p>
+      <p className="muted small">The poller reads this registry and the polling switches on every tick, so changes apply within 30 seconds. An endpoint is polled only when the fleet, its endpoint type, its plant and the endpoint itself are all switched on (and the plant is live). API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule.</p>
+      {polling && <PollingPanel polling={polling} onChange={onPolling} />}
       {err && <div className="error">{err}</div>}
+      {toggleErr && <div className="error">{toggleErr}</div>}
       <div className="table-wrap"><table>
-        <thead><tr><th></th><th>Plant</th><th>Status</th><th className="num">Capacity</th><th>Endpoints polled</th><th>API key</th><th>Last test</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Plant</th><th>Polling</th><th>Status</th><th className="num">Capacity</th><th>Endpoints polled</th><th>API key</th><th>Last test</th><th></th></tr></thead>
         <tbody>{shown.map(p => (<Fragment key={p.mnemonic}>
           <tr>
             <td><button className="ghost icon" aria-label="Show endpoints" onClick={() => setOpen(o => ({ ...o, [p.mnemonic]: !o[p.mnemonic] }))}>{open[p.mnemonic] ? "▾" : "▸"}</button></td>
             <td><a href={`#/plant/${p.mnemonic}`}><b>{p.mnemonic.toUpperCase()}</b></a><div className="small muted">{p.name}</div></td>
+            <td><Switch on={p.polling_enabled} onChange={v => togglePlant(p, v)} title="Pause or resume all endpoints of this plant" /></td>
             <td><span className={`badge ${p.status === "live" ? "green" : p.status === "onboarding" ? "amber" : ""}`}>{p.status}</span></td>
             <td className="num">{p.capacity_mw ? `${p.capacity_mw} MW` : "—"}</td>
             <td className="small">{CATS.filter(c => p.endpoints.some(e => e.category === c)).map(c => {
               const e = p.endpoints.find(x => x.category === c)!;
-              return <span key={c} className={`chip ${e.enabled ? "on-soft" : "off"}`} title={e.url}>{CAT_LABEL[c]}</span>;
+              return <span key={c} className={`chip ${e.polled ? "on-soft" : "off"}`} title={e.polled ? `Polled: ${e.url}` : `Not polled: ${e.off_reason}`}>{CAT_LABEL[c]}</span>;
             })}</td>
             <td><KeyBadge p={p} /></td>
             <td><PlantSummary p={p} tests={tests} /></td>
@@ -134,13 +201,14 @@ export function PlantsList() {
             </td>
           </tr>
           {open[p.mnemonic] && (
-            <tr className="sub"><td></td><td colSpan={7}>
+            <tr className="sub"><td></td><td colSpan={8}>
               {!p.endpoints.length ? <span className="muted small">No endpoints configured.</span> : (
                 <table className="inner"><tbody>{CATS.filter(c => p.endpoints.some(e => e.category === c)).map(c => {
                   const e = p.endpoints.find(x => x.category === c)!;
                   return (
                     <tr key={c}>
-                      <td><b>{CAT_LABEL[c]}</b>{!e.enabled && <div className="small muted">not polled</div>}</td>
+                      <td className="ep-switch"><Switch on={e.enabled} onChange={v => toggleEndpoint(p, c, v)} title="Pause or resume this endpoint" /></td>
+                      <td><b>{CAT_LABEL[c]}</b><div className={`small ${e.polled ? "good" : "muted"}`}>{e.polled ? "Polled on schedule" : e.off_reason}</div></td>
                       <td className="mono small url-cell">{e.url}</td>
                       <td><Verdict r={tests[`${p.mnemonic}:${c}`]} /></td>
                       <td><button className="ghost small-btn" disabled={tests[`${p.mnemonic}:${c}`] === "running"} onClick={() => test(p.mnemonic, [c], c)}>Test</button></td>

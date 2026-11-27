@@ -9,6 +9,7 @@ from .. import validation as v
 from ..auth import current_user, plant_for_user, visible_plant_ids
 from ..config import now_local
 from ..db import get_session
+from ..switches import Switches, load_switches, off_reason
 from ..models import (
     CATEGORIES, FORECAST_CATEGORIES, AlertLog, AppUser, ComplianceFlag, DeadlineCheck, ForecastPoint,
     ForecastSnapshot, MmfReading, Plant, PollAttempt, RawResponse,
@@ -17,14 +18,18 @@ from ..models import (
 router = APIRouter(tags=["data"])
 
 
-def plant_out(p: Plant, admin: bool = False) -> dict:
-    """The API key itself is never returned; admins see whether one is set and its last 4 characters."""
+def plant_out(p: Plant, admin: bool = False, sw: Switches | None = None) -> dict:
+    """The API key itself is never returned; admins see whether one is set and its last 4 characters.
+    With switches given, each endpoint also says whether it is polled on schedule and, if not, why."""
+    sw = sw or Switches()
     auth = {"auth_method": p.auth_method, "auth_param_name": p.auth_param_name,
             "has_api_key": bool(p.api_key_enc), "api_key_hint": p.api_key_hint,
             "created_at": p.created_at, "updated_at": p.updated_at} if admin else {}
     return {"id": p.id, "mnemonic": p.mnemonic, "name": p.name, "capacity_mw": p.capacity_mw,
             "mmf_station_count": p.mmf_station_count, "status": p.status, "notes": p.notes, **auth,
-            "endpoints": [{"category": e.category, "url": e.url, "enabled": e.enabled, "note": e.note}
+            "polling_enabled": p.polling_enabled,
+            "endpoints": [{"category": e.category, "url": e.url, "enabled": e.enabled, "note": e.note,
+                           "polled": off_reason(sw, p, e) is None, "off_reason": off_reason(sw, p, e)}
                           for e in sorted(p.endpoints, key=lambda e: CATEGORIES.index(e.category)
                                           if e.category in CATEGORIES else 99)]}
 
@@ -33,20 +38,23 @@ def plant_out(p: Plant, admin: bool = False) -> dict:
 async def list_plants(user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
     ids = await visible_plant_ids(user, s)
     plants = (await s.execute(select(Plant).where(Plant.id.in_(ids)).order_by(Plant.mnemonic))).scalars().all()
-    return [plant_out(p, user.role == "gso_admin") for p in plants]
+    sw = await load_switches(s)
+    return [plant_out(p, user.role == "gso_admin", sw) for p in plants]
 
 
 @router.get("/plants/{mnem}")
 async def get_plant(mnem: str, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
-    return plant_out(await plant_for_user(mnem, user, s), user.role == "gso_admin")
+    return plant_out(await plant_for_user(mnem, user, s), user.role == "gso_admin", await load_switches(s))
 
 
 @router.get("/fleet/status")
 async def fleet_status(user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
     """Compliance board: the latest poll per plant and category, plus open alert counts."""
     ids = list(await visible_plant_ids(user, s))
+    sw = await load_switches(s)
+    polling = {"fleet": sw.fleet, "types": sw.types}
     if not ids:
-        return {"generated_at": now_local(), "plants": []}
+        return {"generated_at": now_local(), "plants": [], "polling": polling}
     latest = (await s.execute(text("""
         SELECT DISTINCT ON (plant_id, category) plant_id, category, id, started_at, http_status, latency_ms,
                is_valid, major_flags, minor_flags, error
@@ -68,7 +76,8 @@ async def fleet_status(user: AppUser = Depends(current_user), s: AsyncSession = 
         cells = {}
         for e in p.endpoints:
             r = by.get((p.id, e.category))
-            if not e.enabled:
+            reason = off_reason(sw, p, e)
+            if reason:
                 state = "disabled"
             elif r is None:
                 state = "never"
@@ -79,7 +88,8 @@ async def fleet_status(user: AppUser = Depends(current_user), s: AsyncSession = 
             else:
                 state = "invalid"
             cells[e.category] = {
-                "state": state, "enabled": e.enabled, "last_poll": r["started_at"] if r else None,
+                "state": state, "enabled": reason is None, "off_reason": reason,
+                "last_poll": r["started_at"] if r else None,
                 "http_status": r["http_status"] if r else None, "latency_ms": r["latency_ms"] if r else None,
                 "major_flags": r["major_flags"] if r else 0, "minor_flags": r["minor_flags"] if r else 0,
                 "error": r["error"] if r else None, "last_valid": ok.get((p.id, e.category)),
@@ -87,7 +97,7 @@ async def fleet_status(user: AppUser = Depends(current_user), s: AsyncSession = 
             }
         out.append({"mnemonic": p.mnemonic, "name": p.name, "status": p.status, "cells": cells,
                     "open_alerts": sum(c["open_alerts"] for c in cells.values())})
-    return {"generated_at": now_local(), "plants": out}
+    return {"generated_at": now_local(), "plants": out, "polling": polling}
 
 
 @router.get("/plants/{mnem}/forecast/{category}")

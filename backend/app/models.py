@@ -90,6 +90,7 @@ class Plant(Base):
     auth_param_name: Mapped[str | None] = mapped_column(String(100))  # e.g. X-API-Key or apiKey
     api_key_enc: Mapped[str | None] = mapped_column(Text)
     api_key_hint: Mapped[str | None] = mapped_column(String(8))
+    polling_enabled: Mapped[bool] = mapped_column(Boolean, default=True)  # plant-level polling switch
     created_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime)
 
@@ -113,6 +114,15 @@ class PlantEndpoint(Base):
 
 
 # ---------------------------------------------------------------- scheduler
+class PollSwitch(Base):
+    """Fleet-wide ('fleet') and per-endpoint-type ('type:mmf') polling switches. A missing row means on."""
+    __tablename__ = "poll_switch"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_by: Mapped[int | None] = mapped_column(Integer)
+
+
 class PollSchedule(Base):
     """When each category is pulled. plant_id NULL = default for every plant; a plant row overrides it."""
     __tablename__ = "poll_schedule"

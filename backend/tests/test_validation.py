@@ -194,3 +194,22 @@ def test_mmf_flags_point_at_values():
     assert paths["VALUE_MISSING"] == [f"/MMFResponse/MMFData/{humidity}/MMF1", f"/MMFResponse/MMFData/{humidity}/MMF2"]
     assert paths["EXTRA_PARAMETER"] == ["/MMFResponse/MMFData/12/Parameter"]
     assert v.ptr("a/b", "c~d", 3) == "/a~1b/c~0d/3"
+
+
+def test_polling_switch_levels():
+    from app.models import Plant, PlantEndpoint
+    from app.switches import Switches, off_reason
+    p = Plant(mnemonic="kmls", status="live", polling_enabled=True)
+    ep = PlantEndpoint(category="mmf", enabled=True)
+    sw = Switches()
+    assert off_reason(sw, p, ep) is None
+    ep.enabled = False
+    assert off_reason(sw, p, ep) == "This endpoint is paused"
+    p.polling_enabled = False
+    assert off_reason(sw, p, ep) == "Polling is paused for this plant"
+    p.status = "suspended"
+    assert off_reason(sw, p, ep) == "Plant status is suspended"
+    sw.types["mmf"] = False
+    assert off_reason(sw, p, ep) == "MMF is paused for all plants"
+    sw.fleet = False
+    assert off_reason(sw, p, ep) == "Fleet polling is paused"  # the highest level wins

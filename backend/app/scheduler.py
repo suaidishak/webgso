@@ -23,6 +23,7 @@ from .models import (
     ScheduleRun,
 )
 from .poller import mark_run, poll_endpoint
+from .switches import load_switches, off_reason
 from . import validation as v
 
 log = logging.getLogger("gso.scheduler")
@@ -117,11 +118,12 @@ def last_deadline(d: ComplianceDeadline, now: datetime) -> tuple[datetime, datet
 async def check_deadlines(now: datetime):
     async with SessionLocal() as s:
         deadlines = (await s.execute(select(ComplianceDeadline).where(ComplianceDeadline.enabled))).scalars().all()
+        sw = await load_switches(s)
         plants = (await s.execute(select(Plant).where(Plant.status == "live"))).scalars().all()
         defaults = {d.category: d for d in deadlines if d.plant_id is None}
         overrides = {(d.plant_id, d.category): d for d in deadlines if d.plant_id is not None}
         for p in plants:
-            enabled_cats = {e.category for e in p.endpoints if e.enabled}
+            enabled_cats = {e.category for e in p.endpoints if off_reason(sw, p, e) is None}
             for cat in set(defaults) | {c for (pid, c) in overrides if pid == p.id}:
                 if cat not in enabled_cats:
                     continue
@@ -172,9 +174,12 @@ async def tick(tasks: set[asyncio.Task]):
     catchup = timedelta(minutes=get_settings().scheduler_catchup_minutes)
     async with SessionLocal() as s:
         schedules = (await s.execute(select(PollSchedule))).scalars().all()
+        sw = await load_switches(s)
+        if not sw.fleet:
+            return  # fleet polling paused: nothing is queued and no deadlines are judged
         rows = (await s.execute(select(PlantEndpoint.plant_id, PlantEndpoint.category).join(Plant).where(
-            and_(PlantEndpoint.enabled, Plant.status == "live")))).all()
-        enabled = {(r.plant_id, r.category) for r in rows}
+            and_(PlantEndpoint.enabled, Plant.status == "live", Plant.polling_enabled)))).all()
+        enabled = {(r.plant_id, r.category) for r in rows if sw.types.get(r.category, True)}
         plant_ids = sorted({p for p, _ in enabled})
         jobs = []
         for (pid, cat), sch in effective_schedules(schedules, plant_ids).items():
@@ -222,10 +227,12 @@ async def initial_sweep(tasks: set[asyncio.Task]):
     async with SessionLocal() as s:
         rows = (await s.execute(text("""
             SELECT e.plant_id, e.category FROM plant_endpoint e JOIN plant p ON p.id = e.plant_id
-            WHERE e.enabled AND p.status = 'live' AND NOT EXISTS (
+            WHERE e.enabled AND p.status = 'live' AND p.polling_enabled AND NOT EXISTS (
                 SELECT 1 FROM poll_attempt a WHERE a.plant_id = e.plant_id AND a.category = e.category)
         """))).all()
-    rows = [(pid, cat) for pid, cat in rows if (pid, cat) not in _sweeping]
+        sw = await load_switches(s)
+    rows = [(pid, cat) for pid, cat in rows
+            if (pid, cat) not in _sweeping and sw.fleet and sw.types.get(cat, True)]
     if rows:
         log.info("first poll for %d never-polled endpoints", len(rows))
     for pid, cat in rows:

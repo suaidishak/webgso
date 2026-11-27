@@ -43,6 +43,7 @@ UPGRADES = [
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS api_key_hint VARCHAR(8)",
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS polling_enabled BOOLEAN NOT NULL DEFAULT true",
 ]
 
 
@@ -77,7 +78,8 @@ async def seed():
         if not (await s.execute(select(Plant))).first():
             base = cfg.seed_base_url.rstrip("/")
             for m in PILOT_PLANTS:
-                p = Plant(mnemonic=m, name=m.upper(), status="live", auth_method="none", created_at=now_local())
+                p = Plant(mnemonic=m, name=m.upper(), status="live", auth_method="none",
+                          polling_enabled=True, created_at=now_local())
                 for cat, path in FORECAST_PATHS.items():
                     p.endpoints.append(PlantEndpoint(category=cat, url=f"{base}/{m}/{path}"))
                 p.endpoints.append(PlantEndpoint(category="mmf", url=f"{base}/{m}/{MMF_PATH}", enabled=True))

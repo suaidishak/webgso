@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api, CATS, CAT_LABEL, fmt } from "../api";
 import Icon, { Skeleton, Spinner } from "../Icon";
+import { BulkBar, NO_REGION, PageCheck, Pager, invalidatePlantIndex, regionsOf, usePlantIndex, useQueryState } from "../components";
 
 type Endpoint = { category: string; url: string; enabled: boolean; note: string | null; polled?: boolean; off_reason?: string | null };
 type PlantRow = {
-  mnemonic: string; name: string; capacity_mw: number | null; mmf_station_count: number | null; status: string;
+  mnemonic: string; name: string; region: string | null; capacity_mw: number | null; mmf_station_count: number | null; status: string;
   notes: string | null; endpoints: Endpoint[]; auth_method: string; auth_param_name: string | null;
   has_api_key: boolean; api_key_hint: string | null; updated_at: string | null; polling_enabled: boolean;
 };
@@ -142,14 +143,33 @@ function PlantSummary({ p, tests }: { p: PlantRow; tests: TestState }) {
   );
 }
 
-export function PlantsList() {
+const PLANT_SORTS: [string, string][] = [["mnemonic", "Mnemonic A–Z"], ["name", "Name A–Z"], ["region", "Region"], ["capacity", "Largest capacity"], ["updated", "Recently changed"]];
+const LIST_DEFAULTS = { q: "", region: "", status: "", polling: "", key: "", sort: "mnemonic", size: "50", page: "0" };
+
+/** Run async jobs with at most n at once (testing 100+ plants one by one would take far too long). */
+async function pool<T>(items: T[], n: number, fn: (x: T) => Promise<unknown>) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const x = items[i++]; await fn(x); }
+  }));
+}
+
+export function PlantsList({ query = "" }: { query?: string }) {
   const [rows, setRows] = useState<PlantRow[] | null>(null);
-  const [q, setQ] = useState("");
+  const [f, setQ] = useQueryState("/admin/plants", query, LIST_DEFAULTS);
+  const set = (patch: Partial<typeof LIST_DEFAULTS>) => setQ({ ...patch, page: "0" });
   const [deleting, setDeleting] = useState<PlantRow | null>(null);
+  const [importing, setImporting] = useState(false);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const { tests, test, err } = useTests();
   const [polling, setPolling] = useState<Polling | null>(null);
   const [toggleErr, setToggleErr] = useState("");
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState("");
+  const [bulkCat, setBulkCat] = useState("mmf");
+  const [bulkStatus, setBulkStatus] = useState("live");
+  const [bulkRegion, setBulkRegion] = useState("");
   const load = () => { api<PlantRow[]>("/plants").then(setRows); api<Polling>("/admin/polling").then(setPolling); };
   const replaceRow = (p: PlantRow) => setRows(rs => rs && rs.map(r => (r.mnemonic === p.mnemonic ? p : r)));
   const togglePlant = async (p: PlantRow, enabled: boolean) => {
@@ -161,33 +181,130 @@ export function PlantsList() {
     try { replaceRow(await api(`/admin/plants/${p.mnemonic}/endpoints/${c}/polling`, { method: "PUT", body: { enabled } })); } catch (e: any) { setToggleErr(e.message); }
   };
   const onPolling = (pl: Polling) => { setPolling(pl); api<PlantRow[]>("/plants").then(setRows); };
-  const testPlant = (p: PlantRow) => { setOpen(o => ({ ...o, [p.mnemonic]: true })); return test(p.mnemonic, p.endpoints.map(e => e.category)); };
+  const testPlant = (p: PlantRow, expand = true) => {
+    if (expand) setOpen(o => ({ ...o, [p.mnemonic]: true }));
+    return test(p.mnemonic, p.endpoints.map(e => e.category));
+  };
   const [testingAll, setTestingAll] = useState(false);
-  const testAll = async () => { setTestingAll(true); try { for (const p of shown) await testPlant(p); } finally { setTestingAll(false); } };
+  const testMany = async (ps: PlantRow[]) => {
+    setTestingAll(true);
+    try { await pool(ps.filter(p => p.endpoints.length), 4, p => testPlant(p, ps.length <= 10)); } finally { setTestingAll(false); }
+  };
   useEffect(() => { load(); }, []);
+
+  const regions = useMemo(() => regionsOf((rows || []).map(r => ({ mnemonic: r.mnemonic, name: r.name, region: r.region, status: r.status }))), [rows]);
+  const shown = useMemo(() => {
+    const n = f.q.trim().toLowerCase();
+    const out = (rows || []).filter(p =>
+      (!n || (p.mnemonic + " " + p.name + " " + (p.region || "")).toLowerCase().includes(n))
+      && (!f.region || (p.region || NO_REGION) === f.region)
+      && (!f.status || p.status === f.status)
+      && (!f.polling || (f.polling === "on") === p.polling_enabled)
+      && (!f.key || (f.key === "missing" ? p.auth_method !== "none" && !p.has_api_key : f.key === "set" ? p.has_api_key : p.auth_method === "none")));
+    const by: Record<string, (a: PlantRow, b: PlantRow) => number> = {
+      mnemonic: (a, b) => a.mnemonic.localeCompare(b.mnemonic),
+      name: (a, b) => a.name.localeCompare(b.name),
+      region: (a, b) => (a.region || "~").localeCompare(b.region || "~") || a.mnemonic.localeCompare(b.mnemonic),
+      capacity: (a, b) => (b.capacity_mw || 0) - (a.capacity_mw || 0),
+      updated: (a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""),
+    };
+    return out.sort(by[f.sort] || by.mnemonic);
+  }, [rows, f.q, f.region, f.status, f.polling, f.key, f.sort]);
   if (!rows) return <Skeleton rows={8} />;
-  const shown = rows.filter(p => !q || (p.mnemonic + " " + p.name).toLowerCase().includes(q.toLowerCase()));
+  const size = Number(f.size) || 0;
+  const offset = size ? Number(f.page) * size : 0;
+  const page = size ? shown.slice(offset, offset + size) : shown;
+  const filtered = !!(f.q || f.region || f.status || f.polling || f.key);
+  const selRows = rows.filter(r => sel.has(r.mnemonic));
+
+  const bulk = async (label: string, body: Record<string, unknown>) => {
+    setBusy(label); setNote(""); setToggleErr("");
+    try {
+      const r = await api("/admin/plants/bulk", { method: "POST", body: { plants: [...sel], ...body } });
+      setNote(`${label}: ${r.changed} plant${r.changed === 1 ? "" : "s"} changed${r.unchanged ? `, ${r.unchanged} already set` : ""}${r.skipped.length ? `, ${r.skipped.length} without that API` : ""}.`);
+      invalidatePlantIndex();
+      load();
+    } catch (e: any) { setToggleErr(e.message); }
+    setBusy("");
+  };
+  const busyIcon = (label: string, icon: string) => busy === label ? <Spinner /> : <Icon name={icon} size={14} />;
+
   return (
     <>
       <div className="title-row">
         <h2>Plants</h2>
-        <span className="muted small">{rows.length} registered</span>
-        <span style={{ flex: 1 }} />
-        <input className="search" type="search" placeholder="Search plants" aria-label="Search plants" value={q} onChange={e => setQ(e.target.value)} />
-        <button className="ghost" onClick={testAll} disabled={testingAll || !shown.length}>{testingAll ? <><Spinner />Testing…</> : "Test all plants"}</button>
-        <a className="button" href="#/admin/plants/new"><Icon name="plus" />Add plant</a>
+        <span className="muted small">{rows.length} registered{filtered ? ` · ${shown.length} match` : ""}</span>
+        <span className="actions push-right">
+          <button className="ghost" onClick={() => testMany(shown)} disabled={testingAll || !shown.length}
+            title={filtered ? "Test every endpoint of the plants that match the filters" : "Test every endpoint of every plant"}>
+            {testingAll ? <><Spinner />Testing…</> : filtered ? `Test ${shown.length} shown` : "Test all plants"}</button>
+          <button className="ghost" onClick={() => setImporting(true)}><Icon name="table" />Import plants</button>
+          <a className="button" href="#/admin/plants/new"><Icon name="plus" />Add plant</a>
+        </span>
       </div>
-      <p className="muted small">The poller reads this registry and the polling switches on every tick, so changes apply within 30 seconds. An endpoint is polled only when the fleet, its endpoint type, its plant and the endpoint itself are all switched on (and the plant is live). API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule.</p>
+      <p className="muted small">The poller reads this registry and the polling switches on every tick, so changes apply within 30 seconds. An endpoint is polled only when the fleet, its endpoint type, its plant and the endpoint itself are all switched on (and the plant is live). API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule. Tick plants to pause, resume, test or poll many at once.</p>
       {polling && <PollingPanel polling={polling} onChange={onPolling} />}
+
+      <div className="card board-tools">
+        <div className="board-row">
+          <input className="search" type="search" placeholder="Search plant, name or region" aria-label="Search plants" value={f.q} onChange={e => set({ q: e.target.value })} />
+          {regions.length > 1 && <label className="field inline-field"><span>Region</span>
+            <select value={f.region} onChange={e => set({ region: e.target.value })}>
+              <option value="">All regions</option>{regions.map(r => <option key={r.region} value={r.region}>{r.region} ({r.n})</option>)}
+            </select></label>}
+          <label className="field inline-field"><span>Status</span>
+            <select value={f.status} onChange={e => set({ status: e.target.value })}>
+              <option value="">Any</option><option value="live">Live</option><option value="onboarding">Onboarding</option><option value="suspended">Suspended</option>
+            </select></label>
+          <label className="field inline-field"><span>Polling</span>
+            <select value={f.polling} onChange={e => set({ polling: e.target.value })}>
+              <option value="">Any</option><option value="on">On</option><option value="paused">Paused</option>
+            </select></label>
+          <label className="field inline-field"><span>API key</span>
+            <select value={f.key} onChange={e => set({ key: e.target.value })}>
+              <option value="">Any</option><option value="set">Key set</option><option value="missing">Key missing</option><option value="none">No key used</option>
+            </select></label>
+          <label className="field inline-field"><span>Sort</span>
+            <select value={f.sort} onChange={e => set({ sort: e.target.value })}>{PLANT_SORTS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+          {filtered && <button className="ghost small-btn" onClick={() => setQ({ ...LIST_DEFAULTS, sort: f.sort, size: f.size })}><Icon name="x" size={12} />Clear filters</button>}
+        </div>
+      </div>
+
+      <BulkBar count={sel.size} matched={shown.length} onSelectAll={() => setSel(new Set(shown.map(p => p.mnemonic)))} onClear={() => setSel(new Set())}>
+        <a className="button small-btn" href={`#/admin/poll/${[...sel].join(",")}/all/run`}><Icon name="zap" size={14} />Poll now</a>
+        <button className="ghost small-btn" disabled={testingAll} onClick={() => testMany(selRows)}>{testingAll ? <Spinner /> : null}Test</button>
+        <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk("Paused polling", { action: "pause" })}>{busyIcon("Paused polling", "pause")}Pause polling</button>
+        <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk("Resumed polling", { action: "resume" })}>{busyIcon("Resumed polling", "refresh")}Resume polling</button>
+        <span className="bulk-group">
+          <select aria-label="API to pause or resume" value={bulkCat} onChange={e => setBulkCat(e.target.value)}>{CATS.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}</select>
+          <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk(`Paused ${CAT_LABEL[bulkCat]}`, { action: "pause_endpoint", category: bulkCat })}>Pause</button>
+          <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk(`Resumed ${CAT_LABEL[bulkCat]}`, { action: "resume_endpoint", category: bulkCat })}>Resume</button>
+        </span>
+        <span className="bulk-group">
+          <select aria-label="New status" value={bulkStatus} onChange={e => setBulkStatus(e.target.value)}>
+            <option value="live">Live</option><option value="onboarding">Onboarding</option><option value="suspended">Suspended</option></select>
+          <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk(`Status set to ${bulkStatus}`, { action: "set_status", value: bulkStatus })}>Set status</button>
+        </span>
+        <span className="bulk-group">
+          <input aria-label="Region" list="region-list" placeholder="Region" value={bulkRegion} onChange={e => setBulkRegion(e.target.value)} />
+          <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk(bulkRegion.trim() ? `Region set to ${bulkRegion.trim()}` : "Region cleared", { action: "set_region", value: bulkRegion.trim() })}>{bulkRegion.trim() ? "Set region" : "Clear region"}</button>
+        </span>
+      </BulkBar>
+      <datalist id="region-list">{regions.filter(r => r.region !== NO_REGION).map(r => <option key={r.region} value={r.region} />)}</datalist>
+      {note && <div className="okline card small" role="status">{note}</div>}
       {err && <div className="error" role="alert">{err}</div>}
       {toggleErr && <div className="error" role="alert">{toggleErr}</div>}
       <div className="table-wrap"><table>
-        <thead><tr><th><span className="sr-only">Expand</span></th><th>Plant</th><th>Polling</th><th>Status</th><th className="num">Capacity</th><th>Endpoints polled</th><th>API key</th><th>Last test</th><th></th></tr></thead>
-        <tbody>{!shown.length && <tr><td colSpan={9} className="muted">{q ? `No plants match "${q}".` : "No plants yet. Add one to start polling."}</td></tr>}{shown.map(p => (<Fragment key={p.mnemonic}>
-          <tr>
+        <thead><tr><th className="sel-col"><PageCheck ids={page.map(p => p.mnemonic)} sel={sel} onChange={setSel} label="Select every plant on this page" /></th>
+          <th><span className="sr-only">Expand</span></th><th>Plant</th><th>Region</th><th>Polling</th><th>Status</th><th className="num">Capacity</th><th>Endpoints polled</th><th>API key</th><th>Last test</th><th></th></tr></thead>
+        <tbody>{!page.length && <tr><td colSpan={11} className="muted">{filtered ? "No plants match these filters." : "No plants yet. Add one, or import several, to start polling."}</td></tr>}{page.map(p => (<Fragment key={p.mnemonic}>
+          <tr className={sel.has(p.mnemonic) ? "sel" : ""}>
+            <td className="sel-col"><input type="checkbox" aria-label={`Select ${p.mnemonic.toUpperCase()}`} checked={sel.has(p.mnemonic)}
+              onChange={e => setSel(s => { const n = new Set(s); e.target.checked ? n.add(p.mnemonic) : n.delete(p.mnemonic); return n; })} /></td>
             <td><button className="ghost icon" aria-label={`Endpoints of ${p.mnemonic.toUpperCase()}`} aria-expanded={!!open[p.mnemonic]}
               onClick={() => setOpen(o => ({ ...o, [p.mnemonic]: !o[p.mnemonic] }))}><Icon name="chevron" className="chev" /></button></td>
             <td><a href={`#/plant/${p.mnemonic}`} className="mnem">{p.mnemonic.toUpperCase()}</a><div className="small muted">{p.name}</div></td>
+            <td className="small">{p.region || <span className="muted">—</span>}</td>
             <td><Switch on={p.polling_enabled} onChange={v => togglePlant(p, v)} title={`Polling for ${p.mnemonic.toUpperCase()}: pause or resume all its endpoints`} /></td>
             <td><span className={`badge ${p.status === "live" ? "green" : p.status === "onboarding" ? "amber" : ""}`}>{p.status}</span></td>
             <td className="num">{p.capacity_mw ? `${p.capacity_mw} MW` : "—"}</td>
@@ -204,7 +321,7 @@ export function PlantsList() {
             </td>
           </tr>
           {open[p.mnemonic] && (
-            <tr className="sub"><td></td><td colSpan={8}>
+            <tr className="sub"><td></td><td></td><td colSpan={9}>
               {!p.endpoints.length ? <span className="muted small">No endpoints configured.</span> : (
                 <table className="inner"><tbody>{CATS.filter(c => p.endpoints.some(e => e.category === c)).map(c => {
                   const e = p.endpoints.find(x => x.category === c)!;
@@ -223,8 +340,92 @@ export function PlantsList() {
           )}
         </Fragment>))}</tbody>
       </table></div>
-      {deleting && <DeleteDialog p={deleting} onClose={() => setDeleting(null)} onDone={() => { setDeleting(null); load(); }} />}
+      <Pager total={shown.length} offset={offset} limit={size} noun="plants" allowAll
+        onOffset={o => setQ({ page: String(size ? Math.floor(o / size) : 0) })} onLimit={n => setQ({ size: String(n), page: "0" })} />
+      {deleting && <DeleteDialog p={deleting} onClose={() => setDeleting(null)} onDone={() => { setDeleting(null); invalidatePlantIndex(); load(); }} />}
+      {importing && <ImportDialog onClose={() => setImporting(false)} onDone={() => { invalidatePlantIndex(); load(); }} />}
     </>
+  );
+}
+
+/** Minimal CSV/TSV parser for pasted spreadsheet rows (quoted fields, commas or tabs). */
+function parseTable(text: string): Record<string, string>[] {
+  const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const sep = lines[0].includes("\t") ? "\t" : ",";
+  const split = (l: string) => {
+    const out: string[] = []; let cur = "", q = false;
+    for (let i = 0; i < l.length; i++) {
+      const ch = l[i];
+      if (q) { if (ch === '"' && l[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; }
+      else if (ch === '"') q = true; else if (ch === sep) { out.push(cur); cur = ""; } else cur += ch;
+    }
+    out.push(cur);
+    return out.map(x => x.trim());
+  };
+  const head = split(lines[0]).map(h => h.toLowerCase().replace(/[^a-z_]/g, "_").replace(/^_+|_+$/g, ""));
+  const alias: Record<string, string> = { capacity: "capacity_mw", mw: "capacity_mw", base: "base_url", url: "base_url", stations: "mmf_station_count", mmf_stations: "mmf_station_count", plant: "mnemonic", code: "mnemonic" };
+  return lines.slice(1).map(l => {
+    const cells = split(l);
+    return Object.fromEntries(head.map((h, i) => [alias[h] || h, cells[i] ?? ""]));
+  });
+}
+
+type ImportResult = { dry_run: boolean; summary: Record<string, number>; rows: { line: number; mnemonic: string; action: string; message: string }[] };
+
+function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [text, setText] = useState("mnemonic,name,region,capacity_mw,base_url\n");
+  const [update, setUpdate] = useState(false);
+  const [res, setRes] = useState<ImportResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const rows = useMemo(() => parseTable(text), [text]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const run = async (dry: boolean) => {
+    setBusy(true); setErr("");
+    try {
+      const r = await api<ImportResult>("/admin/plants/import", { method: "POST", body: { rows, dry_run: dry, update_existing: update } });
+      setRes(r);
+      if (!dry) onDone();
+    } catch (e: any) { setErr(e.message); }
+    setBusy(false);
+  };
+  const s = res?.summary;
+  return (
+    <div className="modal" onClick={() => !busy && onClose()}>
+      <div className="card wide-modal" role="dialog" aria-modal="true" aria-labelledby="imp-title" onClick={e => e.stopPropagation()}>
+        <h3 id="imp-title">Import plants</h3>
+        <p className="small muted">Paste rows from a spreadsheet (tab-separated) or CSV with a header row. Columns: <code>mnemonic</code>, <code>name</code>, <code>base_url</code> (needed for new plants),
+          and optionally <code>region</code>, <code>capacity_mw</code>, <code>mmf_station_count</code>, <code>status</code> (onboarding, live or suspended; default onboarding).
+          Each new plant gets the five rev5 endpoints under its base URL, e.g. <code>{"{base_url}"}/{"{mnemonic}"}/forecast/rolling</code> and <code>/mmf/live</code>. Add API keys afterwards on each plant.</p>
+        <textarea className="mono import-box" rows={8} value={text} aria-label="Plants to import" onChange={e => { setText(e.target.value); setRes(null); }} />
+        <label className="toggle"><input type="checkbox" checked={update} onChange={e => { setUpdate(e.target.checked); setRes(null); }} /> Update plants that already exist (name, region, capacity, MMF stations, status; never URLs or keys)</label>
+        {err && <div className="error" role="alert">{err}</div>}
+        {res && s && (
+          <div className="import-result">
+            <p className="small" role="status"><b>{res.dry_run ? "Check" : "Done"}:</b> {s.create} to add, {s.update} to update, {s.skip} skipped, <span className={s.error ? "txt-red" : ""}>{s.error} with errors</span>{res.dry_run ? " (nothing saved yet)" : ""}.</p>
+            <div className="table-wrap import-table"><table>
+              <thead><tr><th className="num">Line</th><th>Plant</th><th>Result</th><th>Detail</th></tr></thead>
+              <tbody>{res.rows.map(r => (
+                <tr key={r.line}><td className="num">{r.line}</td><td className="mnem">{r.mnemonic.toUpperCase()}</td>
+                  <td><span className={`badge ${r.action === "error" ? "red" : r.action === "skip" ? "" : "green"}`}>{r.action}</span></td><td className="small">{r.message}</td></tr>
+              ))}</tbody>
+            </table></div>
+          </div>
+        )}
+        <div className="actions">
+          <span className="small muted">{rows.length} row{rows.length === 1 ? "" : "s"} read</span>
+          <button className="ghost push-right" onClick={onClose} disabled={busy}>{res && !res.dry_run ? "Close" : "Cancel"}</button>
+          <button className="ghost" onClick={() => run(true)} disabled={busy || !rows.length}>{busy ? <Spinner /> : null}Check</button>
+          <button onClick={() => run(false)} disabled={busy || !rows.length || !res?.dry_run || !!(res && (res.summary.create + res.summary.update) === 0)}
+            title={!res?.dry_run ? "Check the rows first" : undefined}>{(() => { const n = res?.dry_run ? res.summary.create + res.summary.update : 0; return n ? `Import ${n} plant${n === 1 ? "" : "s"}` : "Import"; })()}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -281,10 +482,12 @@ export function PlantForm({ mnem }: { mnem?: string }) {
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const { tests, test, err: testErr } = useTests();
+  const index = usePlantIndex();
+  const regions = [...new Set((index || []).map(p => p.region).filter(Boolean) as string[])].sort();
 
   useEffect(() => {
     if (!editing) {
-      setF({ mnemonic: "", name: "", capacity_mw: "", mmf_station_count: "", status: "onboarding", notes: "",
+      setF({ mnemonic: "", name: "", region: "", capacity_mw: "", mmf_station_count: "", status: "onboarding", notes: "",
         auth_method: "none", auth_param_name: "", has_api_key: false, api_key_hint: null, endpoints: blankEndpoints() });
       return;
     }
@@ -293,7 +496,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
         const e = p.endpoints.find(x => x.category === b.category);
         return e ? { ...e } : { ...b, enabled: false };
       });
-      setF({ ...p, capacity_mw: p.capacity_mw ?? "", mmf_station_count: p.mmf_station_count ?? "", notes: p.notes ?? "",
+      setF({ ...p, region: p.region ?? "", capacity_mw: p.capacity_mw ?? "", mmf_station_count: p.mmf_station_count ?? "", notes: p.notes ?? "",
         auth_param_name: p.auth_param_name ?? "", endpoints: eps });
     }).catch(e => setErr(e.message));
   }, [mnem]);
@@ -312,7 +515,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
   const save = async () => {
     setErr(""); setSaving(true);
     const body: any = {
-      mnemonic: f.mnemonic.trim(), name: f.name.trim(), status: f.status, notes: f.notes || null,
+      mnemonic: f.mnemonic.trim(), name: f.name.trim(), status: f.status, notes: f.notes || null, region: f.region.trim() || null,
       capacity_mw: f.capacity_mw === "" ? null : Number(f.capacity_mw),
       mmf_station_count: f.mmf_station_count === "" ? null : Number(f.mmf_station_count),
       auth_method: f.auth_method, auth_param_name: f.auth_method === "none" ? null : (f.auth_param_name.trim() || null),
@@ -323,6 +526,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
     else if (key) body.api_key = key;
     try {
       const saved = await api(editing ? `/admin/plants/${mnem}` : "/admin/plants", { method: editing ? "PUT" : "POST", body });
+      invalidatePlantIndex();
       location.hash = editing ? "#/admin/plants" : `#/admin/plants/${saved.mnemonic}`;
       if (!editing) return;
     } catch (e: any) { setErr(e.message); }
@@ -355,7 +559,12 @@ export function PlantForm({ mnem }: { mnem?: string }) {
                 <option value="onboarding">Onboarding (not polled)</option><option value="live">Live (polled)</option><option value="suspended">Suspended (not polled)</option>
               </select></label>
           </div>
-          <label className="field">Notes<input value={f.notes} onChange={e => set("notes", e.target.value)} /></label>
+          <div className="row2">
+            <label className="field">Region <span className="muted small">(groups and filters the fleet)</span>
+              <input value={f.region} list="plant-regions" maxLength={60} placeholder="e.g. Northern" onChange={e => set("region", e.target.value)} /></label>
+            <label className="field">Notes<input value={f.notes} onChange={e => set("notes", e.target.value)} /></label>
+          </div>
+          <datalist id="plant-regions">{regions.map(r => <option key={r} value={r} />)}</datalist>
         </section>
 
         <section className="card">

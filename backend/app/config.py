@@ -24,6 +24,19 @@ class Settings(BaseSettings):
     # A due run older than this is skipped instead of executed late (e.g. after downtime).
     scheduler_catchup_minutes: int = 10
     verify_tls: bool = True
+    # Polling at fleet scale (100+ plants). At most this many plant calls run at once across the
+    # whole process, and at most poll_per_host at once against any one host (several plants can
+    # share one host, as the 8 pilots do).
+    poll_concurrency: int = 32
+    poll_per_host: int = 4
+    db_pool_size: int = 20
+    db_max_overflow: int = 20
+    # Poll now: how long the request waits for a run before handing back a run id to follow.
+    poll_now_wait_s: int = 20
+    poll_now_max_endpoints: int = 2500
+    # Offline demo: when > 0 and the database has no plants, seed this many simulated plants
+    # (spread over regions) instead of the 8 pilots. Use with SEED_BASE_URL pointing at mockplants.
+    seed_mock_fleet: int = 0
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
 
 

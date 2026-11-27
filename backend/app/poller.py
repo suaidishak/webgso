@@ -28,8 +28,39 @@ from .models import (
 
 log = logging.getLogger("gso.poller")
 
-MAX_PER_HOST = 4  # several plants share one host (ws3.gedine.work serves all 8 pilot plants)
-_host_locks: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphore(MAX_PER_HOST))
+_limits: dict = {}  # per event loop: the global and per-host semaphores and the shared HTTP client
+
+
+def _state() -> dict:
+    """Concurrency limits and one pooled HTTP client, created lazily for the running event loop.
+
+    At fleet scale (100+ plants, 500+ endpoints) a tick can queue hundreds of polls at once. The global
+    semaphore caps how many plant calls are in flight (poll_concurrency), the per-host one protects hosts
+    that serve several plants (poll_per_host), and the shared client reuses connections and TLS sessions
+    instead of opening a new client for every call."""
+    loop = asyncio.get_running_loop()
+    st = _limits.get("state")
+    if st is None or st["loop"] is not loop:
+        cfg = get_settings()
+        st = {"loop": loop, "all": asyncio.Semaphore(cfg.poll_concurrency),
+              # Polls may hold at most half the connection pool, so API requests are never starved.
+              "db": asyncio.Semaphore(max(2, cfg.db_pool_size // 2)),
+              "hosts": defaultdict(lambda: asyncio.Semaphore(cfg.poll_per_host)),
+              "client": httpx.AsyncClient(
+                  verify=cfg.verify_tls, follow_redirects=False,
+                  limits=httpx.Limits(max_connections=cfg.poll_concurrency * 2,
+                                      max_keepalive_connections=cfg.poll_concurrency),
+                  headers={"Accept": "application/json", "Accept-Encoding": "gzip",
+                           "User-Agent": "GSO-Solar-Platform/0.1"})}
+        _limits["state"] = st
+    return st
+
+
+def in_flight() -> int:
+    """Plant calls running right now (for logs and the health check)."""
+    st = _limits.get("state")
+    return 0 if st is None else get_settings().poll_concurrency - st["all"]._value  # noqa: SLF001
+
 
 # Rules raised as alerts. Minor flags are recorded but never alert.
 POLL_ALERT_RULES_PREFIX = ("HTTP_", "FETCH_")
@@ -43,14 +74,12 @@ async def fetch(url: str, timeout_s: int, retries: int, backoff_s: int,
     last: dict = {}
     for attempt in range(1, retries + 2):
         t0 = _time.monotonic()
+        st = _state()
         try:
-            async with _host_locks[host]:
-                async with httpx.AsyncClient(timeout=timeout_s, verify=get_settings().verify_tls,
-                                             headers={"Accept": "application/json",
-                                                      "Accept-Encoding": "gzip",
-                                                      "User-Agent": "GSO-Solar-Platform/0.1",
-                                                      **(auth_headers or {})}) as client:
-                    resp = await client.get(url, params=auth_params or None)
+            async with st["all"], st["hosts"][host]:
+                t0 = _time.monotonic()  # time the call itself, not the wait for a free slot
+                resp = await st["client"].get(url, params=auth_params or None, headers=auth_headers or None,
+                                              timeout=timeout_s)
             last = {"status": resp.status_code, "content": resp.content,
                     "latency_ms": int((_time.monotonic() - t0) * 1000), "error": None, "tries": attempt}
             if resp.status_code < 500:
@@ -67,7 +96,8 @@ async def fetch(url: str, timeout_s: int, retries: int, backoff_s: int,
 async def poll_endpoint(plant_id: int, category: str, *, scheduled_for: datetime | None = None,
                         timeout_s: int = 60, retries: int = 2, backoff_s: int = 20) -> int | None:
     """Poll one endpoint end to end. Returns the poll_attempt id."""
-    async with SessionLocal() as s:
+    db = _state()["db"]
+    async with db, SessionLocal() as s:
         plant = await s.get(Plant, plant_id)
         ep = (await s.execute(select(PlantEndpoint).where(
             PlantEndpoint.plant_id == plant_id, PlantEndpoint.category == category))).scalar_one_or_none()
@@ -79,7 +109,7 @@ async def poll_endpoint(plant_id: int, category: str, *, scheduled_for: datetime
     started = now_local()
     res = await fetch(url, timeout_s, retries, backoff_s, headers, params)
 
-    async with SessionLocal() as s:
+    async with db, SessionLocal() as s:
         attempt = PollAttempt(plant_id=plant_id, category=category, url=url, scheduled_for=scheduled_for,
                               started_at=started, http_status=res["status"], latency_ms=res["latency_ms"],
                               bytes=len(res["content"]) if res["content"] is not None else None,
@@ -197,9 +227,9 @@ async def sync_alerts(s: AsyncSession, plant_id: int, category: str, flags: list
             a.cleared_at = now
 
 
-async def mark_run(run_id: int, attempt_id: int | None):
+async def mark_run(run_id: int, attempt_id: int | None, status: str | None = None):
     async with SessionLocal() as s:
         from .models import ScheduleRun
         await s.execute(update(ScheduleRun).where(ScheduleRun.id == run_id).values(
-            status="done" if attempt_id else "failed", poll_attempt_id=attempt_id))
+            status=status or ("done" if attempt_id else "failed"), poll_attempt_id=attempt_id))
         await s.commit()

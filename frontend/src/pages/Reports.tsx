@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, download, CATS, CAT_LABEL } from "../api";
 import Icon, { Skeleton, Spinner } from "../Icon";
 import Sheet, { SheetCol, cellText } from "../Sheet";
+import { PlantPicker } from "../components";
 
 /* Reports: any selection of polled data as a spreadsheet-style table, and the same selection as CSV.
    The filters live in the URL (#/reports?plants=bdws&category=dayahead&range=24h...), so a report can be
@@ -85,7 +86,6 @@ function apiQuery(f: F, extra: Record<string, string> = {}): string {
 
 export default function Reports({ query }: { query: string }) {
   const [f, setF] = useState<F>(() => readQuery(query));
-  const [plants, setPlants] = useState<{ mnemonic: string; name: string }[]>([]);
   const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null);
   const [size, setSize] = useState(100);
   const [offset, setOffset] = useState(0);
@@ -94,7 +94,6 @@ export default function Reports({ query }: { query: string }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { api("/plants").then(setPlants).catch(() => setPlants([])); }, []);
   const set = (patch: Partial<F>) => { setF(x => ({ ...x, ...patch })); setOffset(0); };
 
   // Keep the address bar in step with the filters without adding a history entry for every click.
@@ -130,7 +129,6 @@ export default function Reports({ query }: { query: string }) {
     setBusy(false);
   };
 
-  const togglePlant = (m: string) => set({ plants: f.plants.includes(m) ? f.plants.filter(x => x !== m) : [...f.plants, m] });
   // Keep view and API compatible: MMF data only exists in the MMF view and vice versa.
   const setCategory = (c: string) => set({
     category: c,
@@ -159,18 +157,8 @@ export default function Reports({ query }: { query: string }) {
       </div>
 
       <div className="card report-filters">
-        <div className="field plants-field"><span id="plants-lbl">Plants</span>
-          <div className="chips" role="group" aria-labelledby="plants-lbl">
-            <label className={`chip ${f.plants.length ? "" : "on"}`}>
-              <input type="checkbox" checked={!f.plants.length} onChange={() => set({ plants: [] })} />Whole fleet</label>
-            {plants.map(p => (
-              <label key={p.mnemonic} className={`chip ${f.plants.includes(p.mnemonic) ? "on" : ""}`} title={p.name}>
-                <input type="checkbox" checked={f.plants.includes(p.mnemonic)} onChange={() => togglePlant(p.mnemonic)} />{p.mnemonic.toUpperCase()}
-              </label>
-            ))}
-          </div>
-        </div>
         <div className="report-row">
+          <div className="field"><span>Plants</span><PlantPicker value={f.plants} onChange={v => set({ plants: v })} /></div>
           <label className="field"><span>API</span>
             <select value={apis.includes(f.category) ? f.category : "all"} onChange={e => setCategory(e.target.value)}>
               {apis.length > 1 && <option value="all">{f.view === "points" || f.view === "wide" ? "All forecast APIs" : "All APIs"}</option>}
@@ -214,7 +202,7 @@ export default function Reports({ query }: { query: string }) {
         </span>
         <button className="push-right" onClick={exportCsv} disabled={busy || !total}>{busy ? <><Spinner />Preparing CSV…</> : <><Icon name="download" />Download CSV</>}</button>
       </div>
-      <p className="muted small report-hint">{viewInfo.hint} Times are Malaysia time (MYT).{page?.truncated && <b className="bad"> {f.view === "wide" ? "Only the first 100 polls are shown as columns." : "Only the first 2,000 polls are flattened in this view."} Narrow the time range or plants, or tick Latest poll only, to see the rest.</b>}</p>
+      <p className="muted small report-hint">{viewInfo.hint} Times are Malaysia time (MYT).{page?.truncated && <b className="bad"> {f.view === "wide" ? "Only the first 300 polls are shown as columns." : "Only the first 2,000 polls are flattened in this view."} Narrow the time range or plants, or tick Latest poll only, to see the rest.</b>}</p>
 
       {err && <div className="error" role="alert">{err}</div>}
       {!page && loading && <Skeleton rows={8} />}

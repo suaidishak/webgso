@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { api, download, CATS, CAT_LABEL, fmt } from "../api";
 import Inspect from "./Inspect";
 import Icon, { Skeleton, Spinner } from "../Icon";
+import { PlantPicker } from "../components";
 
 type Alert = { id: number; rule: string; severity: string; message: string; raised_at: string; occurrences: number };
 type Result = {
@@ -21,22 +22,29 @@ export const pollHref = (plant = "all", category = "all", run = true) =>
 const history_replace = (href: string) => window.history.replaceState(null, "", href);
 
 type Run = { id: number; polled_at: string; finished_at: string | null; by: string | null; plants: string[] | null;
-  category: string | null; summary: Summary; count: number; results?: Result[] };
+  category: string | null; summary: Summary; count: number; status: string; done: number; total: number; results?: Result[] };
 
 const scopeLabel = (plants: string[] | null, c: string | null) =>
-  `${!plants ? "All plants" : plants.map(x => x.toUpperCase()).join(", ")} · ${!c ? "all APIs" : CAT_LABEL[c]}`;
+  `${!plants ? "All plants" : plants.length > 6 ? `${plants.length} plants` : plants.map(x => x.toUpperCase()).join(", ")} · ${!c ? "all APIs" : CAT_LABEL[c]}`;
+const RESULTS_PAGE = 100;
 
 export default function PollNow({ plant: p0 = "all", category: c0 = "all", autorun = false, runId }:
   { plant?: string; category?: string; autorun?: boolean; runId?: string }) {
-  const [plants, setPlants] = useState<{ mnemonic: string; name: string }[]>([]);
-  const [plant, setPlant] = useState(p0);
+  const initial = p0 === "all" ? [] : p0.split(",").filter(Boolean);
+  const [plants, setPlants] = useState<string[]>(initial);
   const [category, setCategory] = useState(c0);
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState("");
   const [out, setOut] = useState<(Run & { results: Result[] }) | null>(null);
+  const [progress, setProgress] = useState<Run | null>(null);
   const [history, setHistory] = useState<Run[] | null>(null);
   const [open, setOpen] = useState<number | null>(null);
+  const [verdict, setVerdict] = useState("");
+  const [find, setFind] = useState("");
+  const [shownN, setShownN] = useState(RESULTS_PAGE);
   const started = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const loadHistory = () => api<Run[]>("/admin/poll-runs?limit=20").then(h => { setHistory(h); return h; });
 
@@ -45,43 +53,59 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
     const rank = { fail: 0, warn: 1, pass: 2 } as Record<string, number>;
     const results = [...r.results].sort((x, y) => rank[x.verdict] - rank[y.verdict]);
     setOut({ ...r, results });
-    setPlant(r.plants?.length === 1 ? r.plants[0] : "all");
+    setProgress(null);
+    setPlants(r.plants || []);
     setCategory(r.category || "all");
+    setVerdict(""); setFind(""); setShownN(RESULTS_PAGE);
     const first = results.length === 1 ? results[0] : results.find(x => x.verdict === "fail");
     setOpen(openFirst && first?.attempt_id ? first.attempt_id : null);
   };
   const goTo = (id: number) => { try { history_replace(`#/admin/poll/runs/${id}`); } catch { /* ignore */ } };
 
-  const run = async (pl = plant, c = category) => {
-    setRunning(true); setErr(""); setOpen(null);
+  // A large run (hundreds of plants) carries on in the background: follow it until it finishes.
+  const follow = async (r: Run & { results: Result[] }, openFirst = true) => {
+    let cur = r;
+    while (cur.status === "running" && alive.current) {
+      setProgress(cur);
+      await new Promise(res => setTimeout(res, 1500));
+      cur = await api(`/admin/poll-runs/${cur.id}`);
+    }
+    if (!alive.current) return;
+    if (cur.status === "failed") { setProgress(null); setErr(`The run stopped: ${(cur.summary as any)?.error || "unknown error"}`); return; }
+    show(cur, openFirst);
+  };
+
+  const run = async (pl = plants, c = category) => {
+    setRunning(true); setErr(""); setOpen(null); setOut(null);
     try {
       const r = await api("/admin/poll-now", { method: "POST", body: {
-        plants: pl === "all" ? null : [pl], category: c === "all" ? null : c } });
-      show(r);
+        plants: pl.length ? pl : null, category: c === "all" ? null : c } });
       goTo(r.id);  // the run now has its own address, and a reload won't poll again
+      await follow(r);
       loadHistory().catch(() => {});
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) { setErr(e.message); setProgress(null); }
     setRunning(false);
   };
 
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    api("/plants").then(setPlants).catch(e => setErr(e.message));
-    if (autorun) { run(p0, c0); return; }
+    if (autorun) { loadHistory().catch(() => {}); run(initial, c0); return; }
     if (runId) {
-      api(`/admin/poll-runs/${runId}`).then(r => show(r)).catch(e => setErr(e.message));
+      api(`/admin/poll-runs/${runId}`).then(r => { setPlants(r.plants || []); setCategory(r.category || "all"); return follow(r); }).catch(e => setErr(e.message));
       loadHistory().catch(() => {});
       return;
     }
     // Coming back to the page: reopen the latest run.
     loadHistory().then(h => {
       if (!h.length) return;
-      return api(`/admin/poll-runs/${h[0].id}`).then(r => { show(r, false); goTo(r.id); });
+      return api(`/admin/poll-runs/${h[0].id}`).then(r => { goTo(r.id); return follow(r, false); });
     }).catch(e => setErr(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const results = (out?.results || []).filter(r => (!verdict || r.verdict === verdict)
+    && (!find || r.plant.includes(find.trim().toLowerCase())));
   const s = out?.summary;
   return (
     <>
@@ -92,12 +116,9 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
         alerted on like a scheduled poll, marked as manual.</p>
 
       <div className="card poll-form">
-        <label className="field"><span>Plant</span>
-          <select value={plant} onChange={e => setPlant(e.target.value)} disabled={running}>
-            <option value="all">All plants (whole fleet)</option>
-            {plants.map(x => <option key={x.mnemonic} value={x.mnemonic}>{x.mnemonic.toUpperCase()}{x.name && x.name.toLowerCase() !== x.mnemonic ? ` · ${x.name}` : ""}</option>)}
-          </select>
-        </label>
+        <div className="field"><span>Plants</span>
+          <PlantPicker value={plants} onChange={setPlants} disabled={running} allLabel="All plants (whole fleet)" />
+        </div>
         <label className="field"><span>API</span>
           <select value={category} onChange={e => setCategory(e.target.value)} disabled={running}>
             <option value="all">All APIs</option>
@@ -107,7 +128,15 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
         <button onClick={() => run()} disabled={running}>{running ? <><Spinner />Polling…</> : <><Icon name="zap" />Poll now</>}</button>
       </div>
       {err && <div className="error" role="alert">{err}</div>}
-      {running && !out && <Skeleton rows={4} />}
+      {progress && (
+        <div className="card run-progress" role="status">
+          <div className="findings-head"><b><Spinner /> Polling {scopeLabel(progress.plants, progress.category)}</b>
+            <span className="muted small">{progress.done} of {progress.total} calls done · started {fmt(progress.polled_at)}{progress.by ? ` by ${progress.by}` : ""}</span></div>
+          <div className="progress" aria-hidden="true"><i style={{ width: `${Math.round(100 * progress.done / Math.max(1, progress.total))}%` }} /></div>
+          <p className="small muted">Large runs carry on in the background. You can leave this page and come back with this run's link; the results appear here when every call is done.</p>
+        </div>
+      )}
+      {running && !out && !progress && <Skeleton rows={4} />}
 
       {out && s && (
         <>
@@ -120,11 +149,22 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
               <button className="ghost small-btn" onClick={() => download(`/reports/export.csv?run=${out.id}&view=json`).catch(e => setErr(e.message))}><Icon name="download" />Download CSV</button>
             </span>}
           </div>
+          {out.results.length > 10 && (
+            <div className="board-row result-filter">
+              <div className="chips" role="group" aria-label="Show results">
+                {([["", "All", out.results.length], ["fail", "Fail", s.fail], ["warn", "Warnings", s.warn], ["pass", "Pass", s.pass]] as [string, string, number][]).map(([k, l, n]) => (
+                  <label key={k || "all"} className={`chip ${verdict === k ? "on" : ""}`}><input type="radio" name="verdict" checked={verdict === k} onChange={() => { setVerdict(k); setShownN(RESULTS_PAGE); }} />{l}<span className="chip-n">{n}</span></label>
+                ))}
+              </div>
+              <input className="search" type="search" placeholder="Find plant" aria-label="Find plant in results" value={find} onChange={e => { setFind(e.target.value); setShownN(RESULTS_PAGE); }} />
+            </div>
+          )}
           <div className="table-wrap">
             <table className="poll-results">
               <thead><tr><th>Plant</th><th>API</th><th>Result</th><th>Alerts</th><th></th></tr></thead>
               <tbody>
-                {out.results.map(r => {
+                {!results.length && <tr><td colSpan={5} className="muted">No results match.</td></tr>}
+                {results.slice(0, shownN).map(r => {
                   const isOpen = open !== null && open === r.attempt_id;
                   const al = r.alerts;
                   return (
@@ -158,6 +198,11 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
               </tbody>
             </table>
           </div>
+          {results.length > shownN && (
+            <div className="pager"><span className="muted small">Showing {shownN} of {results.length} results, problems first</span>
+              <button className="ghost small-btn" onClick={() => setShownN(n => n + RESULTS_PAGE * 2)}>Show more</button>
+              <button className="ghost small-btn" onClick={() => setShownN(results.length)}>Show all</button></div>
+          )}
           {out.summary.alerts_raised + out.summary.alerts_ongoing > 0 && <p className="small muted">All open alerts are on the <a href="#/alerts">Alerts</a> page.</p>}
           <p className="small muted">Alerts are shown as they stood right after this run. Raw JSON is the response stored for each call.</p>
         </>
@@ -173,7 +218,7 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
                 <tr key={h.id} className={out?.id === h.id ? "sel" : ""}>
                   <td><a href={`#/admin/poll/runs/${h.id}`}>{fmt(h.polled_at)}</a></td>
                   <td>{scopeLabel(h.plants, h.category)} <span className="muted small">({h.count} call{h.count === 1 ? "" : "s"})</span></td>
-                  <td className="nowrap">{h.summary.fail ? <span className="verdict fail">{h.summary.fail} fail</span> : null} {h.summary.warn ? <span className="verdict warn">{h.summary.warn} warn</span> : null} {h.summary.pass ? <span className="verdict pass">{h.summary.pass} pass</span> : null}</td>
+                  <td className="nowrap">{h.status === "running" ? <span className="verdict running"><Spinner />{h.done}/{h.total}</span> : h.status === "failed" ? <span className="verdict fail">stopped</span> : null} {h.summary.fail ? <span className="verdict fail">{h.summary.fail} fail</span> : null} {h.summary.warn ? <span className="verdict warn">{h.summary.warn} warn</span> : null} {h.summary.pass ? <span className="verdict pass">{h.summary.pass} pass</span> : null}</td>
                   <td className="small">{h.summary.alerts_raised} new · {h.summary.alerts_ongoing} open · {h.summary.alerts_cleared} cleared</td>
                   <td className="small muted">{h.by || "—"}</td>
                 </tr>

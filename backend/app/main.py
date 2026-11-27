@@ -18,6 +18,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # A Poll now run still "running" belonged to an API process that has since stopped.
+    async with engine.begin() as c:
+        await c.execute(text("UPDATE poll_run SET status = 'failed', finished_at = now() AT TIME ZONE :tz, "
+                             "summary = summary || '{\"error\": \"Interrupted by an API restart\"}'::jsonb "
+                             "WHERE status = 'running'"), {"tz": get_settings().timezone})
     yield
 
 

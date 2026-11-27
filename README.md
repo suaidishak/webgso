@@ -33,6 +33,15 @@ alert to look at. It also makes BKHS require the API key `demo-key-1234` (`MOCK_
 set that key under Plants, its tests fail with HTTP 401. The mock answers for any mnemonic, so you
 can try adding new plants against it.
 
+**Offline demo at fleet scale:** add `SEED_MOCK_FLEET=120` (again on an empty database) to seed the 8
+pilots plus 112 simulated plants spread over four regions. The mock gives about one in five simulated plants a
+fixed fault (unreachable, short day-ahead, slow, or broken MMF) so the problem-first views have something to show.
+
+```bash
+docker compose down -v
+SEED_MOCK_FLEET=120 SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
+```
+
 **Without Docker:** Postgres 16, Python 3.12+, Node 20+.
 
 ```bash
@@ -48,7 +57,7 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173
 
 | Part | Where | Notes |
 |---|---|---|
-| Poller | `backend/app/poller.py` | Async httpx, GET only, retries with backoff, at most 4 concurrent calls per host (all 8 pilots share one host). Every call is logged in `poll_attempt`. |
+| Poller | `backend/app/poller.py` | Async httpx, GET only, retries with backoff, at most 32 calls in flight and 4 per host (all 8 pilots share one host), one pooled client. Every call is logged in `poll_attempt`. |
 | Raw landing | `raw_response` (JSONB) | Every distinct response kept exactly as received, with a SHA-256 hash, for disputes. Unchanged responses are not stored twice. |
 | Tolerant validation | `backend/app/validation.py` | Nothing is rejected. Each rule break is stored as a **major** or **minor** flag in `compliance_flag`. Valid means no major flag. |
 | Typed data | `forecast_snapshot`, `forecast_point`, `mmf_reading` | One snapshot per distinct forecast version. Extra MMF parameters are kept and marked non-standard. |
@@ -64,6 +73,21 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173
 | Admin | `routers/admin.py` | Approve users and assign roles and plants, edit schedules and deadlines. Every change goes to `audit_event`. |
 | Raw response inspector | `GET /api/v1/attempts/{id}/inspect`, `frontend/src/pages/Inspect.tsx` | Click any status on the fleet board (or Inspect on a plant's polls, or "see where" on a test result) to open that poll's raw JSON. Every place that caused a finding is highlighted: red for major, amber for minor. Hover a highlight to see the rule and reason. Click a finding to step through its places. Each validation flag records JSON Pointers to the offending fields. The inspector re-runs the validator on the stored body to place them, so no extra data is stored per poll. Raw responses are kept byte-for-byte as sent (`body_text`) as well as in JSONB. |
 | Dashboard | `frontend/` | React + Vite. Pages: fleet board, plant drill-down (forecast chart, MMF table, flags, raw JSON, recent polls), alert log, compliance (24 h rule summary and deadlines), and admin pages for users, schedules and the audit log. |
+
+### Built for 100+ plants
+
+The fleet will grow past 100 plants, so every page is built to stay usable at that size (tested with 120
+simulated plants, 600 endpoints):
+
+| Where | What |
+|---|---|
+| Fleet board | Server-side search (mnemonic, name, region), filter chips with counts (with problems, unreachable, non-compliant, open alerts, minor, not polled, paused, healthy), filter by one API, region or plant status, **problems-first** sort (or most alerts, stalest poll, name, region, capacity), group by region with per-region problem counts, compact density, pages of 25 to 250 (or all). Tiles are clickable filters. Admins tick plants (or "select all N matching") to Poll now, pause or resume polling, or open their reports and alerts. Filters live in the URL. |
+| Plants | Search and filter by region, status, polling and API-key state, sort, paging. Bulk actions on ticked plants: Poll now, Test (4 at a time), pause or resume polling (whole plant or one API type), set status, set region. **Import plants** pastes rows from a spreadsheet or CSV (`POST /api/v1/admin/plants/import`, with a check step first). Each plant has an optional **region**. |
+| Plant pickers | One searchable multi-select (`frontend/src/components.tsx`) with region shortcuts and "select these N", used by Poll now, Reports, Alerts, Compliance and user plant access. |
+| Poll now | Any set of plants (or a region) and APIs. Runs in the background with a progress bar, so a 600-call fleet run doesn't time out; results open with problems first, with verdict filters, search and "show more". |
+| Alerts, Compliance, Audit | Server-side paging, filters (plants, region, API, severity, rule, acknowledged, free text), "most alerts / most breaks" plant shortcuts, and bulk acknowledge (`POST /api/v1/alerts/ack`). `GET /alerts`, `/compliance/summary`, `/compliance/deadlines` and `/admin/audit` now return `{rows, total, ...}`. |
+| Reports | Forecast by slot takes up to 300 plant polls as columns. |
+| Poller and scheduler | One pooled HTTP client; at most `POLL_CONCURRENCY` (32) calls in flight and `POLL_PER_HOST` (4) per host; polls use at most half the DB pool (`DB_POOL_SIZE`, 20) so the API is never starved. Due pulls are queued in one multi-row insert per tick, a pull is skipped (status `skipped`) while the previous one for that endpoint is still running, and deadline checks are judged with two batched queries instead of several per plant. The board reads the latest poll per endpoint with an indexed lookup instead of scanning all poll history. |
 
 ### Validation rules (decided 27 Nov 2026)
 

@@ -38,7 +38,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 VIEWS = ("points", "mmf", "json", "polls", "wide")
 JSON_POLL_CAP = 2000  # the json view flattens in Python; beyond this many polls, narrow the filters
-WIDE_POLL_CAP = 100  # columns in the wide forecast layout
+WIDE_POLL_CAP = 300  # columns in the wide forecast layout (one per plant poll; a 100+ plant fleet fits)
 
 
 @dataclass

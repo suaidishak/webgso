@@ -11,6 +11,8 @@ from .models import (
 )
 
 PILOT_PLANTS = ["kmls", "mals", "kals", "lmms", "bdws", "sids", "skns", "bkhs"]
+# Offline demo at fleet scale (SEED_MOCK_FLEET=120): simulated plants spread over these regions.
+MOCK_REGIONS = [("nrt", "Northern"), ("cen", "Central"), ("sth", "Southern"), ("ecs", "East Coast")]
 # 27 Nov 2026: GSO first asked to skip MALS and LMMS MMF (known issues), then asked to poll them
 # so the alerts and the raw-response inspector show what is wrong with their JSON.
 OLD_MMF_SKIP_NOTE = "Known MMF issues; ignored for now (GSO, 27 Nov 2026)"
@@ -44,6 +46,17 @@ UPGRADES = [
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS polling_enabled BOOLEAN NOT NULL DEFAULT true",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS region VARCHAR(60)",
+    "CREATE INDEX IF NOT EXISTS ix_plant_region ON plant (region)",
+    "ALTER TABLE poll_run ADD COLUMN IF NOT EXISTS status VARCHAR(10) NOT NULL DEFAULT 'done'",
+    "ALTER TABLE poll_run ADD COLUMN IF NOT EXISTS total INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE poll_run ADD COLUMN IF NOT EXISTS done INTEGER NOT NULL DEFAULT 0",
+    # Busy lists at 100+ plants: open alerts, deadline checks and flags by time.
+    "CREATE INDEX IF NOT EXISTS ix_alert_cleared_raised ON alert_log (cleared_at, raised_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_deadline_due ON deadline_check (due_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_flag_ts ON compliance_flag (ts)",
+    # The fleet board's "last valid poll" per endpoint, without scanning a long-broken endpoint's history.
+    "CREATE INDEX IF NOT EXISTS ix_attempt_valid ON poll_attempt (plant_id, category, started_at) WHERE is_valid",
     # Reports join each poll to its points and readings.
     "CREATE INDEX IF NOT EXISTS ix_snap_raw ON forecast_snapshot (raw_response_id)",
     "CREATE INDEX IF NOT EXISTS ix_mmf_attempt ON mmf_reading (poll_attempt_id)",
@@ -80,8 +93,13 @@ async def seed():
 
         if not (await s.execute(select(Plant))).first():
             base = cfg.seed_base_url.rstrip("/")
-            for m in PILOT_PLANTS:
-                p = Plant(mnemonic=m, name=m.upper(), status="live", auth_method="none",
+            plants = [(m, m.upper(), None, None) for m in PILOT_PLANTS]
+            for i in range(max(0, cfg.seed_mock_fleet - len(PILOT_PLANTS))):
+                code, region = MOCK_REGIONS[i % len(MOCK_REGIONS)]
+                n = i // len(MOCK_REGIONS) + 1
+                plants.append((f"{code}{n:03d}", f"{region} Solar {n}", region, float(40 + (i * 7) % 60)))
+            for m, name, region, cap in plants:
+                p = Plant(mnemonic=m, name=name, region=region, capacity_mw=cap, status="live", auth_method="none",
                           polling_enabled=True, created_at=now_local())
                 for cat, path in FORECAST_PATHS.items():
                     p.endpoints.append(PlantEndpoint(category=cat, url=f"{base}/{m}/{path}"))

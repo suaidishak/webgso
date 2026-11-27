@@ -5,9 +5,11 @@ string, rolling category 'ActivePowerProduction' with 97 points, KMLS/KALS MMF i
 shape with sentinel values, LMMS NaN MMF values, 'C'/'o' units and upper-case PlantName.
 MOCK_FAULTS (e.g. "sids:dayahead,bdws:rolling") makes a plant serve a short forecast to show alerts.
 """
+import asyncio
 import math
 import os
 import random
+import zlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -21,6 +23,26 @@ SLOT = timedelta(minutes=15)
 # MOCK_REQUIRE_KEY="bkhs:secret" makes a plant answer 401 unless the key comes as an X-API-Key header
 # or an apiKey query parameter, to try the platform's per-plant API key settings.
 REQUIRED_KEYS = dict(x.split(":", 1) for x in os.getenv("MOCK_REQUIRE_KEY", "").split(",") if ":" in x)
+# MOCK_FLEET_FAULTS=1: simulated (non-pilot) plants get a fixed, mnemonic-derived fault, so a 100+ plant
+# demo fleet has a realistic mix of problems: ~5% down (503), ~5% short day-ahead, ~5% slow (3 s),
+# ~5% broken MMF (500). The other ~80% are healthy.
+FLEET_FAULTS = os.getenv("MOCK_FLEET_FAULTS", "") in ("1", "true", "yes")
+
+
+def fleet_fault(mnem: str) -> str | None:
+    if not FLEET_FAULTS or mnem in PLANTS:
+        return None
+    return {0: "down", 1: "short", 2: "slow", 3: "mmf"}.get(zlib.crc32(mnem.encode()) % 20)
+
+
+async def apply_fleet_fault(mnem: str, cat: str):
+    f = fleet_fault(mnem)
+    if f == "down":
+        raise HTTPException(503, "Service unavailable")
+    if f == "slow":
+        await asyncio.sleep(3)
+    if f == "mmf" and cat == "mmf":
+        raise HTTPException(500, "MMF logger offline")
 
 
 def check_key(mnem: str, request: Request):
@@ -52,7 +74,7 @@ def series(mnem, cat, start, end):
         pts.append({"StartTime": t.isoformat(), "EndTime": (t + SLOT).isoformat(),
                     "ForecastValue": str(solar(t, cap)), "Unit": "MW"})
         t += SLOT
-    if (mnem, cat) in FAULTS:
+    if (mnem, cat) in FAULTS or (cat == "dayahead" and fleet_fault(mnem) == "short"):
         pts = pts[:-10]
     return pts
 
@@ -62,10 +84,11 @@ CATEGORY = {"rolling": "ActivePowerProduction", "dayahead": "DayAhead", "weekahe
 
 
 @app.get("/{mnem}/forecast/{cat}")
-def forecast(mnem: str, cat: str, request: Request):
+async def forecast(mnem: str, cat: str, request: Request):
     if not mnem.isalnum() or cat not in CATEGORY:
         raise HTTPException(404)
     check_key(mnem, request)
+    await apply_fleet_fault(mnem, cat)
     n = now()
     day = n.replace(hour=0, minute=0, second=0)
     if cat == "rolling":
@@ -98,10 +121,11 @@ PARAMS = [("HorIrradiance", "W/m2", 0, 1000), ("IncIrradiance", "W/m2", 0, 1100)
 
 
 @app.get("/{mnem}/mmf/live")
-def mmf(mnem: str, request: Request):
+async def mmf(mnem: str, request: Request):
     if not mnem.isalnum():
         raise HTTPException(404)
     check_key(mnem, request)
+    await apply_fleet_fault(mnem, "mmf")
     n = now().replace(second=0)
     n = n.replace(minute=n.minute - n.minute % 5)
     if mnem in ("kmls", "kals"):  # raw sensor dump, not rev5

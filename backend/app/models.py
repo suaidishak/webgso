@@ -71,6 +71,10 @@ class PollRun(Base):
     user_id: Mapped[int | None] = mapped_column(Integer)
     plants: Mapped[list | None] = mapped_column(JSONB)  # None = whole fleet
     category: Mapped[str | None] = mapped_column(String(20))  # None = every API
+    # Large runs (a 100+ plant fleet) run in the background: running -> done | failed, with progress.
+    status: Mapped[str] = mapped_column(String(10), default="done")
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[dict] = mapped_column(JSONB)
     results: Mapped[list] = mapped_column(JSONB)
 
@@ -98,6 +102,8 @@ class Plant(Base):
     capacity_mw: Mapped[float | None] = mapped_column(Float)
     mmf_station_count: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="live")  # onboarding | live | suspended
+    # Free-text grouping used to filter and group the fleet (e.g. "Northern", "Kedah"). Optional.
+    region: Mapped[str | None] = mapped_column(String(60), index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     # Outbound auth to the plant's web service. The key is encrypted at rest (see secrets.py)
     # and never returned by the API; only its last 4 characters are shown to admins.
@@ -186,7 +192,7 @@ class ScheduleRun(Base):
     category: Mapped[str] = mapped_column(String(30))
     due_at: Mapped[datetime] = mapped_column(DateTime)
     enqueued_at: Mapped[datetime] = mapped_column(DateTime)
-    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | done | failed | manual
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | done | failed | skipped (still running) | manual
     poll_attempt_id: Mapped[int | None] = mapped_column(BigInteger)
 
 

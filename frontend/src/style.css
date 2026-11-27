@@ -436,3 +436,82 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .xl-status .xl-keys { margin-left: auto; font-size: 11.5px; }
 .xl .pager { margin: 0; padding: 6px 10px; border-top: 1px solid var(--line); }
 @media (max-width: 760px) { .xl-status .xl-keys { display: none; } .xl-tools { border-left: 0; } }
+
+/* ---------------------------------------------------------------- fleet scale (100+ plants) */
+button.tile { font: inherit; color: var(--text); text-align: left; cursor: pointer; min-height: 0; border-radius: var(--radius); }
+button.tile:hover:not(:disabled) { background: var(--hover); filter: none; }
+button.tile.picked { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.board-tools { padding: 12px 14px; margin: 0 0 10px; display: flex; flex-direction: column; gap: 10px; }
+.board-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+.board-row input.search { flex: 1 1 220px; max-width: 340px; }
+.inline-field { margin: 0; min-width: 0; }
+.inline-field select { min-width: 130px; }
+.state-chips { max-width: none; align-items: center; }
+.chip-n { margin-left: 6px; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
+.chip.on .chip-n { color: var(--text); }
+.chip .dot { margin-right: 6px; }
+button.chip { font: inherit; font-size: 11.5px; background: none; min-height: 24px; }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; color: var(--muted); min-height: 30px; padding: 4px 10px; font-size: 12.5px; }
+.seg button.on { background: var(--accent-soft); color: var(--text); }
+.board-meta { display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap; margin: 4px 0 8px; }
+.board-meta .legend { margin: 0; }
+.sel-col { width: 34px; text-align: center; }
+.board td.sel-col, .board th.sel-col { position: static; box-shadow: none; }
+.board .sel-col + th { position: sticky; left: 0; z-index: 1; background: var(--panel); box-shadow: 1px 0 0 var(--line); }
+tbody tr.sel > td, tbody tr.sel > th { background: var(--accent-soft); }
+.board .plant-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.small-badge { margin-left: 6px; font-size: 10.5px; padding: 0 6px; }
+.board .col-focus { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.board.compact th, .board.compact td { padding-top: 2px; padding-bottom: 2px; }
+.board.compact .cell { min-width: 0; padding: 2px 6px; grid-template-columns: 10px auto; column-gap: 6px; }
+.board.compact .cell small { grid-column: auto; font-size: 11px; }
+.board.compact .cell .dot { margin-top: 3px; }
+.group-row th { background: var(--raised) !important; position: static !important; box-shadow: none !important; padding: 4px 8px; }
+.group-row th { display: table-cell; }
+.group-row th > * { vertical-align: middle; margin-right: 10px; }
+.group-row .push-right { float: right; }
+.bulk-bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin: 0 0 10px;
+  padding: 8px 12px; border: 1px solid var(--accent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); box-shadow: var(--shadow); }
+.bulk-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+.bulk-group { display: inline-flex; gap: 4px; align-items: center; padding-left: 8px; border-left: 1px solid var(--line-strong); }
+.bulk-group select, .bulk-group input { min-height: 28px; padding: 2px 6px; font-size: 12.5px; max-width: 150px; }
+.okline.card { padding: 8px 12px; margin: 0 0 10px; }
+.picker { position: relative; display: inline-block; min-width: 200px; }
+.picker-btn { width: 100%; justify-content: space-between; gap: 8px; font-weight: 500; color: var(--text); }
+.picker-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.chev-down { transform: rotate(90deg); flex: none; }
+.picker-pop { position: fixed; z-index: 40; width: min(440px, 92vw); padding: 10px; box-shadow: var(--shadow); border-color: var(--line-strong);
+  display: flex; flex-direction: column; gap: 8px; color: var(--text); font-weight: 400; font-size: 13px; }
+.picker-head { display: flex; gap: 6px; }
+.picker-head input.search { flex: 1; min-width: 0; }
+.picker-head select { max-width: 150px; }
+.picker-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.picker-actions .on { border-color: var(--accent); background: var(--accent-soft); }
+.picker-list { list-style: none; margin: 0; padding: 0; max-height: min(320px, 45vh); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.picker-list li { border-bottom: 1px solid var(--line); }
+.picker-list li:last-child { border-bottom: 0; }
+.picker-list li.muted { padding: 8px 10px; }
+.picker-list label { display: grid; grid-template-columns: 18px 64px 1fr auto; gap: 8px; align-items: center; padding: 5px 10px; cursor: pointer; }
+.picker-list label:hover { background: var(--hover); }
+.picker-list label.on { background: var(--accent-soft); }
+.picker-list label b { grid-column: 2 / -1; }
+.picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.picker-foot { display: flex; justify-content: flex-end; }
+.run-progress { margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
+.progress { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--accent); transition: width var(--t) var(--ease); }
+.result-filter { margin: 8px 0; align-items: center; }
+.result-filter .chips { max-width: none; }
+.top-plants { max-width: none; align-items: center; }
+.section-row { margin-top: 24px; }
+.section-row h3 { margin: 0; }
+.section-row .actions label select { min-height: 26px; padding: 2px 6px; margin-left: 4px; }
+.modal .card.wide-modal { max-width: 860px; max-height: 92vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.import-box { width: 100%; font-size: 12.5px; resize: vertical; }
+.import-table { max-height: 260px; overflow: auto; }
+@media (max-width: 760px) {
+  .board-row input.search { max-width: none; }
+  .picker { min-width: 0; width: 100%; }
+  .bulk-actions { margin-left: 0; }
+}

@@ -22,7 +22,7 @@ from .models import (
     AlertLog, ComplianceDeadline, DeadlineCheck, ForecastSnapshot, Plant, PlantEndpoint, PollAttempt, PollSchedule,
     ScheduleRun,
 )
-from .poller import mark_run, poll_endpoint
+from .poller import in_flight, mark_run, poll_endpoint
 from .switches import load_switches, off_reason
 from . import validation as v
 
@@ -116,55 +116,77 @@ def last_deadline(d: ComplianceDeadline, now: datetime) -> tuple[datetime, datet
 
 
 async def check_deadlines(now: datetime):
+    """Judge each live plant's last deadline per category: met, late or missed.
+
+    Built for a large fleet: the deadline checks already recorded are read in one query, and only the
+    pairs still to judge (new, or missed and waiting for a late arrival) are looked up, in one more query."""
     async with SessionLocal() as s:
         deadlines = (await s.execute(select(ComplianceDeadline).where(ComplianceDeadline.enabled))).scalars().all()
+        if not deadlines:
+            return
         sw = await load_switches(s)
         plants = (await s.execute(select(Plant).where(Plant.status == "live"))).scalars().all()
         defaults = {d.category: d for d in deadlines if d.plant_id is None}
         overrides = {(d.plant_id, d.category): d for d in deadlines if d.plant_id is not None}
+        pairs = []  # (plant_id, category, deadline, due_at, target_start)
         for p in plants:
             enabled_cats = {e.category for e in p.endpoints if off_reason(sw, p, e) is None}
             for cat in set(defaults) | {c for (pid, c) in overrides if pid == p.id}:
                 if cat not in enabled_cats:
                     continue
                 d = overrides.get((p.id, cat), defaults.get(cat))
-                if not d:
+                due_target = last_deadline(d, now) if d else None
+                if due_target:
+                    pairs.append((p.id, cat, d, *due_target))
+        if not pairs:
+            return
+        existing = {(c.plant_id, c.category, c.due_at): c for c in (await s.execute(select(DeadlineCheck).where(
+            DeadlineCheck.plant_id.in_({x[0] for x in pairs}),
+            DeadlineCheck.due_at.in_({x[3] for x in pairs})))).scalars().all()}
+        todo = []
+        for pid, cat, d, due, target in pairs:
+            ex = existing.get((pid, cat, due))
+            if ex is None and now >= due + timedelta(minutes=d.grace_minutes):
+                todo.append((pid, cat, d, due, target, None))
+            elif ex is not None and ex.status == "missed":
+                todo.append((pid, cat, d, due, target, ex))
+        if not todo:
+            return
+        found = (await s.execute(text("""
+            SELECT t.pid, t.cat, t.due,
+                   (SELECT min(fs.retrieved_at) FROM forecast_snapshot fs
+                     WHERE fs.plant_id = t.pid AND fs.category = t.cat AND fs.horizon_start = t.target
+                       AND fs.is_valid) AS first_valid,
+                   EXISTS (SELECT 1 FROM poll_attempt a WHERE a.plant_id = t.pid AND a.category = t.cat
+                             AND a.started_at <= t.due) AS polled_before
+            FROM unnest(CAST(:pids AS integer[]), CAST(:cats AS text[]), CAST(:dues AS timestamp[]),
+                        CAST(:targets AS timestamp[])) AS t(pid, cat, due, target)"""),
+            {"pids": [x[0] for x in todo], "cats": [x[1] for x in todo], "dues": [x[3] for x in todo],
+             "targets": [x[4] for x in todo]})).all()
+        info = {(r.pid, r.cat, r.due): (r.first_valid, r.polled_before) for r in found}
+        for pid, cat, d, due, target, ex in todo:
+            first_valid, polled_before = info.get((pid, cat, due), (None, False))
+            evaluate_at = due + timedelta(minutes=d.grace_minutes)
+            if ex is None:
+                # Only judge deadlines the platform was already polling for (not ones before go-live).
+                if not polled_before and first_valid is None:
                     continue
-                due, target = last_deadline(d, now)
-                evaluate_at = due + timedelta(minutes=d.grace_minutes)
-                first_valid = (await s.execute(select(ForecastSnapshot.retrieved_at).where(
-                    ForecastSnapshot.plant_id == p.id, ForecastSnapshot.category == cat,
-                    ForecastSnapshot.horizon_start == target, ForecastSnapshot.is_valid,
-                ).order_by(ForecastSnapshot.retrieved_at).limit(1))).scalar_one_or_none()
-                existing = (await s.execute(select(DeadlineCheck).where(
-                    DeadlineCheck.plant_id == p.id, DeadlineCheck.category == cat,
-                    DeadlineCheck.due_at == due))).scalar_one_or_none()
-                if existing is None:
-                    if now < evaluate_at:
-                        continue
-                    # Only judge deadlines the platform was already polling for (not ones before go-live).
-                    polled_before = (await s.execute(select(PollAttempt.id).where(
-                        PollAttempt.plant_id == p.id, PollAttempt.category == cat,
-                        PollAttempt.started_at <= due).limit(1))).scalar_one_or_none()
-                    if polled_before is None and first_valid is None:
-                        continue
-                    status = "met" if first_valid and first_valid <= evaluate_at else (
-                        "late" if first_valid else "missed")
-                    s.add(DeadlineCheck(plant_id=p.id, category=cat, due_at=due, target_start=target,
-                                        first_valid_at=first_valid, status=status, checked_at=now))
-                    if status == "missed":
-                        s.add(AlertLog(plant_id=p.id, category=cat, rule="DEADLINE_MISSED", severity="major",
-                                       message=f"No valid {cat} forecast for {target:%Y-%m-%d} by "
-                                               f"{due:%Y-%m-%d %H:%M}", raised_at=now, last_seen_at=now,
-                                       detail={"due_at": due.isoformat(), "target": target.isoformat()}))
-                elif existing.status == "missed" and first_valid:
-                    existing.status, existing.first_valid_at, existing.checked_at = "late", first_valid, now
-                    alert = (await s.execute(select(AlertLog).where(
-                        AlertLog.plant_id == p.id, AlertLog.category == cat, AlertLog.rule == "DEADLINE_MISSED",
-                        AlertLog.cleared_at.is_(None)))).scalars().all()
-                    for a in alert:
-                        a.cleared_at = now
-                        a.message += f" (arrived late at {first_valid:%Y-%m-%d %H:%M})"
+                status = "met" if first_valid and first_valid <= evaluate_at else ("late" if first_valid else "missed")
+                s.add(DeadlineCheck(plant_id=pid, category=cat, due_at=due, target_start=target,
+                                    first_valid_at=first_valid, status=status, checked_at=now))
+                if status == "missed":
+                    s.add(AlertLog(plant_id=pid, category=cat, rule="DEADLINE_MISSED", severity="major",
+                                   message=f"No valid {cat} forecast for {target:%Y-%m-%d} by "
+                                           f"{due:%Y-%m-%d %H:%M}", raised_at=now, last_seen_at=now,
+                                   detail={"due_at": due.isoformat(), "target": target.isoformat()}))
+            elif first_valid:
+                ex.status, ex.first_valid_at, ex.checked_at = "late", first_valid, now
+                alert = (await s.execute(select(AlertLog).where(
+                    AlertLog.plant_id == pid, AlertLog.category == cat, AlertLog.rule == "DEADLINE_MISSED",
+                    AlertLog.cleared_at.is_(None)))).scalars().all()
+                for a in alert:
+                    a.cleared_at = now
+                    a.message += f" (arrived late at {first_valid:%Y-%m-%d %H:%M})"
         await s.commit()
 
 
@@ -181,19 +203,27 @@ async def tick(tasks: set[asyncio.Task]):
             and_(PlantEndpoint.enabled, Plant.status == "live", Plant.polling_enabled)))).all()
         enabled = {(r.plant_id, r.category) for r in rows if sw.types.get(r.category, True)}
         plant_ids = sorted({p for p, _ in enabled})
-        jobs = []
+        due_rows, by_key = [], {}
         for (pid, cat), sch in effective_schedules(schedules, plant_ids).items():
             if (pid, cat) not in enabled:
                 continue
             due = last_due(sch, now)
             if due is None or now - due > catchup:
                 continue
-            res = await s.execute(insert(ScheduleRun).values(
-                schedule_id=sch.id, plant_id=pid, category=cat, due_at=due, enqueued_at=now, status="queued",
-            ).on_conflict_do_nothing(constraint="uq_run").returning(ScheduleRun.id))
-            run_id = res.scalar_one_or_none()
-            if run_id:
-                jobs.append((run_id, pid, cat, due, sch.timeout_s, sch.retries, sch.retry_backoff_s, sch.jitter_s))
+            due_rows.append(dict(schedule_id=sch.id, plant_id=pid, category=cat, due_at=due, enqueued_at=now,
+                                 status="queued"))
+            by_key[(sch.id, pid, due)] = sch
+        # One multi-row insert per 1,000 due pulls instead of a round trip each: at 100+ plants a tick
+        # can have hundreds due at once. Rows already there (pulled earlier this period) are skipped.
+        jobs = []
+        for i in range(0, len(due_rows), 1000):
+            res = await s.execute(insert(ScheduleRun).values(due_rows[i:i + 1000]).on_conflict_do_nothing(
+                constraint="uq_run").returning(ScheduleRun.id, ScheduleRun.schedule_id, ScheduleRun.plant_id,
+                                               ScheduleRun.category, ScheduleRun.due_at))
+            for r in res.all():
+                sch = by_key[(r.schedule_id, r.plant_id, r.due_at)]
+                jobs.append((r.id, r.plant_id, r.category, r.due_at, sch.timeout_s, sch.retries,
+                             sch.retry_backoff_s, sch.jitter_s))
         await s.commit()
 
     for run_id, pid, cat, due, timeout_s, retries, backoff, jitter in jobs:
@@ -201,20 +231,33 @@ async def tick(tasks: set[asyncio.Task]):
         tasks.add(t)
         t.add_done_callback(tasks.discard)
     if jobs:
-        log.info("tick %s: queued %d polls", now, len(jobs))
+        log.info("tick %s: queued %d polls (%d tasks pending, %d calls in flight)", now, len(jobs), len(tasks),
+                 in_flight())
     await check_deadlines(now)
 
 
+_active: set[tuple[int, str]] = set()  # (plant, category) polls running now
+
+
 async def _run(run_id, pid, cat, due, timeout_s, retries, backoff, jitter):
-    if jitter:
-        await asyncio.sleep(random.uniform(0, jitter))
+    # A slow plant (timeouts plus retries) can still be running when its next pull falls due. Skip that
+    # pull rather than stacking calls on a struggling plant; the next one runs as normal.
+    if (pid, cat) in _active:
+        await mark_run(run_id, None, status="skipped")
+        return
+    _active.add((pid, cat))
     try:
-        attempt_id = await poll_endpoint(pid, cat, scheduled_for=due, timeout_s=timeout_s, retries=retries,
-                                         backoff_s=backoff)
-    except Exception:  # noqa: BLE001 - one bad plant must never stop the scheduler
-        log.exception("poll failed %s/%s", pid, cat)
-        attempt_id = None
-    await mark_run(run_id, attempt_id)
+        if jitter:
+            await asyncio.sleep(random.uniform(0, jitter))
+        try:
+            attempt_id = await poll_endpoint(pid, cat, scheduled_for=due, timeout_s=timeout_s, retries=retries,
+                                             backoff_s=backoff)
+        except Exception:  # noqa: BLE001 - one bad plant must never stop the scheduler
+            log.exception("poll failed %s/%s", pid, cat)
+            attempt_id = None
+        await mark_run(run_id, attempt_id)
+    finally:
+        _active.discard((pid, cat))
 
 
 _sweeping: set[tuple[int, str]] = set()

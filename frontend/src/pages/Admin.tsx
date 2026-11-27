@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, CAT_LABEL, fmt, User } from "../api";
 import { Skeleton, Spinner } from "../Icon";
+import { Pager, PlantPicker, useDebounced } from "../components";
 
-function UserRow({ u, plants, onSaved }: { u: User; plants: string[]; onSaved: () => void }) {
+function UserRow({ u, onSaved }: { u: User; onSaved: () => void }) {
   const [role, setRole] = useState(u.role || (u.organisation_type === "GSO" ? "gso_user" : "lss_user"));
   const [sel, setSel] = useState<string[]>(u.plants || []);
   const [err, setErr] = useState("");
@@ -24,10 +25,7 @@ function UserRow({ u, plants, onSaved }: { u: User; plants: string[]; onSaved: (
         <option value="gso_admin">GSO admin</option><option value="gso_user">GSO user</option><option value="lss_user">LSS user</option>
       </select></td>
       <td>{role === "lss_user" ? (
-        <div className="chips">{plants.map(p => (
-          <label key={p} className={sel.includes(p) ? "chip on" : "chip"}>
-            <input type="checkbox" checked={sel.includes(p)} onChange={e => setSel(e.target.checked ? [...sel, p] : sel.filter(x => x !== p))} />{p.toUpperCase()}
-          </label>))}</div>
+        <PlantPicker value={sel} onChange={setSel} allowAll={false} allLabel="Choose plants" label={`Plants for ${u.name}`} />
       ) : <span className="muted small">All plants</span>}</td>
       <td className="actions">
         {u.status === "pending" && btn("active", "Approve")}
@@ -42,9 +40,8 @@ function UserRow({ u, plants, onSaved }: { u: User; plants: string[]; onSaved: (
 
 export function AdminUsers() {
   const [users, setUsers] = useState<User[] | null>(null);
-  const [plants, setPlants] = useState<string[]>([]);
   const load = () => api<User[]>("/admin/users").then(setUsers);
-  useEffect(() => { load(); api<any[]>("/plants").then(p => setPlants(p.map(x => x.mnemonic))); }, []);
+  useEffect(() => { load(); }, []);
   if (!users) return <Skeleton rows={6} />;
   const pending = users.filter(u => u.status === "pending").length;
   return (
@@ -52,7 +49,7 @@ export function AdminUsers() {
       <div className="title-row"><h2>Users</h2>{pending > 0 && <span className="badge amber">{pending} waiting for approval</span>}</div>
       <div className="table-wrap"><table>
         <thead><tr><th>User</th><th>Organisation</th><th>Status</th><th>Role</th><th>Plants</th><th></th></tr></thead>
-        <tbody>{[...users].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending")).map(u => <UserRow key={u.id + u.status} u={u} plants={plants} onSaved={load} />)}</tbody>
+        <tbody>{[...users].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending")).map(u => <UserRow key={u.id + u.status} u={u} onSaved={load} />)}</tbody>
       </table></div>
     </>
   );
@@ -122,23 +119,36 @@ export function AdminSchedules() {
 
 export function AdminAudit() {
   const [rows, setRows] = useState<any[] | null>(null);
+  const [total, setTotal] = useState(0);
   const [q, setQ] = useState("");
-  useEffect(() => { api("/admin/audit").then(setRows); }, []);
-  if (!rows) return <Skeleton rows={8} />;
-  const shown = rows.filter(a => !q || JSON.stringify([a.user, a.action, a.entity, a.entity_id, a.after]).toLowerCase().includes(q.toLowerCase()));
+  const [offset, setOffset] = useState(0);
+  const [size, setSize] = useState(100);
+  const [err, setErr] = useState("");
+  const dq = useDebounced(q);
+  useEffect(() => { setOffset(0); }, [dq]);
+  useEffect(() => {
+    let live = true;
+    const p = new URLSearchParams({ limit: String(size), offset: String(offset) });
+    if (dq.trim()) p.set("q", dq.trim());
+    api(`/admin/audit?${p}`).then(d => { if (live) { setRows(d.rows); setTotal(d.total); setErr(""); } }).catch(e => live && setErr(e.message));
+    return () => { live = false; };
+  }, [dq, offset, size]);
+  if (!rows) return err ? <div className="error" role="alert">{err}</div> : <Skeleton rows={8} />;
   return (
     <>
       <div className="title-row">
-        <h2>Audit log</h2><span className="muted small">{shown.length} of {rows.length} entries</span>
-        <input className="search push-right" type="search" placeholder="Filter by user, action or target" aria-label="Filter audit log" value={q} onChange={e => setQ(e.target.value)} />
+        <h2>Audit log</h2><span className="muted small">{total.toLocaleString()} entries{dq ? " match" : ""}</span>
+        <input className="search push-right" type="search" placeholder="Filter by user, action, target or change" aria-label="Filter audit log" value={q} onChange={e => setQ(e.target.value)} />
       </div>
+      {err && <div className="error" role="alert">{err}</div>}
       <div className="table-wrap"><table>
         <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Change</th></tr></thead>
-        <tbody>{!shown.length && <tr><td colSpan={5} className="muted">No entries match.</td></tr>}{shown.map(a => (
+        <tbody>{!rows.length && <tr><td colSpan={5} className="muted">No entries match.</td></tr>}{rows.map(a => (
           <tr key={a.id}><td className="nowrap">{fmt(a.ts)}</td><td>{a.user}</td><td><code>{a.action}</code></td><td>{a.entity} {a.entity_id}</td>
             <td className="small mono url-cell" title={JSON.stringify(a.after, null, 2)}>{JSON.stringify(a.after)?.slice(0, 160)}{(JSON.stringify(a.after)?.length || 0) > 160 ? "…" : ""}</td></tr>
         ))}</tbody>
       </table></div>
+      <Pager total={total} offset={offset} limit={size} noun="entries" sizes={[50, 100, 250, 500]} onOffset={setOffset} onLimit={setSize} />
     </>
   );
 }

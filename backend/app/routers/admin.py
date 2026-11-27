@@ -1,16 +1,20 @@
 """gso_admin only: user approval, plant config, schedules, deadlines, audit log."""
 import asyncio
+import logging
+import time as _time
 from datetime import date, time
+from typing import Literal
 
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, select, text
+from sqlalchemy import Text
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_admin
-from ..config import now_local
-from ..db import get_session
+from ..config import get_settings, now_local
+from ..db import SessionLocal, get_session
 from ..models import (
     CATEGORIES, ROLES, AlertLog, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
     PollRun, PollSchedule, PollSwitch,
@@ -21,9 +25,11 @@ from ..poller import poll_endpoint
 from ..scheduler import next_runs
 from .auth import user_out
 from .data import plant_out
+from ..seed import FORECAST_PATHS, MMF_PATH
 from ..switches import load_switches, off_reason
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+log = logging.getLogger("gso.admin")
 
 
 async def audit(s: AsyncSession, user: AppUser, action: str, entity: str, entity_id, before=None, after=None):
@@ -103,6 +109,7 @@ class PlantIn(BaseModel):
     capacity_mw: float | None = Field(None, gt=0)
     mmf_station_count: int | None = Field(None, ge=0, le=50)
     status: str = Field("live", pattern="^(onboarding|live|suspended)$")
+    region: str | None = Field(None, max_length=60)
     notes: str | None = None
     endpoints: list[EndpointIn] = []
     auth_method: str = Field("none", pattern="^(none|header|query)$")
@@ -129,6 +136,7 @@ class PlantIn(BaseModel):
 def _apply(p: Plant, body: PlantIn):
     p.name, p.capacity_mw, p.mmf_station_count = body.name.strip(), body.capacity_mw, body.mmf_station_count
     p.status, p.notes = body.status, body.notes
+    p.region = (body.region or "").strip() or None
     p.auth_method = body.auth_method
     p.auth_param_name = (body.auth_param_name or ("X-API-Key" if body.auth_method == "header" else "apiKey")
                          ) if body.auth_method != "none" else None
@@ -216,6 +224,148 @@ def _set_endpoints(p: Plant, eps: list[EndpointIn]):
             x.url, x.enabled, x.note = url, e.enabled, e.note
         else:
             p.endpoints.append(PlantEndpoint(category=e.category, url=url, enabled=e.enabled, note=e.note))
+
+
+class BulkIn(BaseModel):
+    plants: list[str] = Field(min_length=1, max_length=5000)
+    action: Literal["pause", "resume", "pause_endpoint", "resume_endpoint", "set_status", "set_region"]
+    category: str | None = None  # for pause_endpoint / resume_endpoint
+    value: str | None = Field(None, max_length=60)  # for set_status / set_region (empty clears the region)
+
+    @model_validator(mode="after")
+    def check(self):
+        if self.action in ("pause_endpoint", "resume_endpoint") and self.category not in CATEGORIES:
+            raise ValueError("Choose an endpoint type")
+        if self.action == "set_status" and self.value not in ("onboarding", "live", "suspended"):
+            raise ValueError("Status must be onboarding, live or suspended")
+        return self
+
+
+@router.post("/plants/bulk")
+async def bulk_plants(body: BulkIn, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    """Change many plants at once: pause or resume polling (whole plant or one endpoint type), set the
+    status or the region. One audit entry lists every plant changed."""
+    wanted = {m.lower() for m in body.plants}
+    plants = (await s.execute(select(Plant).where(Plant.mnemonic.in_(wanted)))).scalars().all()
+    missing = sorted(wanted - {p.mnemonic for p in plants})
+    if missing:
+        raise HTTPException(404, f"Unknown plant: {', '.join(m.upper() for m in missing[:10])}")
+    now, changed, skipped = now_local(), [], []
+    for p in plants:
+        if body.action in ("pause", "resume"):
+            new = body.action == "resume"
+            if p.polling_enabled != new:
+                p.polling_enabled, p.updated_at = new, now
+                changed.append(p.mnemonic)
+        elif body.action in ("pause_endpoint", "resume_endpoint"):
+            ep = next((e for e in p.endpoints if e.category == body.category), None)
+            if ep is None:
+                skipped.append(p.mnemonic)
+                continue
+            new = body.action == "resume_endpoint"
+            if ep.enabled != new:
+                ep.enabled, p.updated_at = new, now
+                changed.append(p.mnemonic)
+        elif body.action == "set_status":
+            if p.status != body.value:
+                p.status, p.updated_at = body.value, now
+                changed.append(p.mnemonic)
+        else:
+            region = (body.value or "").strip() or None
+            if p.region != region:
+                p.region, p.updated_at = region, now
+                changed.append(p.mnemonic)
+    if changed:
+        await audit(s, admin, f"plant.bulk.{body.action}", "plant", f"{len(changed)} plants", None,
+                    {"plants": sorted(changed), "category": body.category, "value": body.value})
+    await s.commit()
+    return {"ok": True, "changed": len(changed), "unchanged": len(plants) - len(changed) - len(skipped),
+            "skipped": sorted(skipped)}
+
+
+class ImportRow(BaseModel):
+    mnemonic: str = Field(min_length=2, max_length=8, pattern="^[A-Za-z0-9]+$")
+    name: str = Field(min_length=1, max_length=200)
+    base_url: str | None = Field(None, pattern=r"^https?://\S+$", max_length=400)
+    region: str | None = Field(None, max_length=60)
+    capacity_mw: float | None = Field(None, gt=0)
+    mmf_station_count: int | None = Field(None, ge=0, le=50)
+    status: str = Field("onboarding", pattern="^(onboarding|live|suspended)$")
+
+
+class ImportIn(BaseModel):
+    rows: list[dict] = Field(min_length=1, max_length=2000)
+    dry_run: bool = True
+    update_existing: bool = False
+
+
+def _blank_to_none(d: dict) -> dict:
+    return {str(k).strip().lower(): (v.strip() if isinstance(v, str) else v) or None for k, v in d.items()
+            if str(k).strip()}
+
+
+@router.post("/plants/import")
+async def import_plants(body: ImportIn, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    """Add many plants at once (e.g. pasted from a spreadsheet). Each new plant gets the five rev5
+    endpoints under its base URL ({base_url}/{mnemonic}/forecast/... and /mmf/live), with no API key,
+    and starts as onboarding unless the row says otherwise. Existing plants are skipped, or with
+    update_existing their name, region, capacity, MMF stations and status are updated (URLs and keys never).
+    dry_run (the default) only reports what would happen."""
+    existing = {p.mnemonic: p for p in (await s.execute(select(Plant))).scalars().all()}
+    out, seen = [], set()
+    created = updated = 0
+    for i, raw in enumerate(body.rows, start=1):
+        d = _blank_to_none(raw)
+        mnem = (d.get("mnemonic") or "").lower()
+        try:
+            row = ImportRow.model_validate(d)
+        except ValueError as e:
+            msg = "; ".join(f"{'.'.join(str(x) for x in er['loc'])}: {er['msg']}" for er in e.errors()) \
+                if hasattr(e, "errors") else str(e)
+            out.append({"line": i, "mnemonic": mnem, "action": "error", "message": msg})
+            continue
+        mnem = row.mnemonic.lower()
+        if mnem in seen:
+            out.append({"line": i, "mnemonic": mnem, "action": "error", "message": "Repeated in this import"})
+            continue
+        seen.add(mnem)
+        if mnem in existing:
+            if not body.update_existing:
+                out.append({"line": i, "mnemonic": mnem, "action": "skip", "message": "Already registered"})
+                continue
+            p = existing[mnem]
+            p.name, p.region = row.name, row.region
+            if row.capacity_mw is not None:
+                p.capacity_mw = row.capacity_mw
+            if row.mmf_station_count is not None:
+                p.mmf_station_count = row.mmf_station_count
+            p.status, p.updated_at = row.status, now_local()
+            updated += 1
+            out.append({"line": i, "mnemonic": mnem, "action": "update", "message": "Details updated"})
+            continue
+        if not row.base_url:
+            out.append({"line": i, "mnemonic": mnem, "action": "error", "message": "base_url is required for a new plant"})
+            continue
+        base = row.base_url.rstrip("/")
+        p = Plant(mnemonic=mnem, name=row.name, region=row.region, capacity_mw=row.capacity_mw,
+                  mmf_station_count=row.mmf_station_count, status=row.status, auth_method="none",
+                  polling_enabled=True, created_at=now_local(), updated_at=now_local())
+        for cat, path in FORECAST_PATHS.items():
+            p.endpoints.append(PlantEndpoint(category=cat, url=f"{base}/{mnem}/{path}"))
+        p.endpoints.append(PlantEndpoint(category="mmf", url=f"{base}/{mnem}/{MMF_PATH}"))
+        s.add(p)
+        created += 1
+        out.append({"line": i, "mnemonic": mnem, "action": "create", "message": f"{base}/{mnem}/…"})
+    errors = sum(r["action"] == "error" for r in out)
+    summary = {"create": created, "update": updated, "skip": sum(r["action"] == "skip" for r in out), "error": errors}
+    if body.dry_run:
+        await s.rollback()
+    else:
+        if created or updated:
+            await audit(s, admin, "plant.import", "plant", f"{created + updated} plants", None,
+                        {**summary, "plants": sorted(r["mnemonic"] for r in out if r["action"] in ("create", "update"))})
+        await s.commit()
+    return {"dry_run": body.dry_run, "summary": summary, "rows": out}
 
 
 @router.post("/plants/{mnem}/poll")
@@ -342,16 +492,27 @@ def _verdict(a: PollAttempt | None, majors: list, minors: list) -> tuple[str, st
     return "pass", "Reachable and compliant with rev5"
 
 
-async def _run_now(s: AsyncSession, targets: list[tuple[Plant, PlantEndpoint]]) -> list[dict]:
+async def _run_now(s: AsyncSession, targets: list[tuple[Plant, PlantEndpoint]], on_done=None) -> list[dict]:
     """Poll each (plant, endpoint) now, ignoring the polling switches. Each call is an ordinary poll:
     stored, validated and able to raise or clear alerts. Returns one result per call, with the alerts
-    it raised, the ones still open and the ones it cleared."""
+    it raised, the ones still open and the ones it cleared. on_done() is called after each call
+    (progress for large runs). Concurrency is bounded by the poller's limits."""
     sw = await load_switches(s)
     pairs = {(p.id, e.category) for p, e in targets}
     before = await _open_alerts(s, pairs)
     now = now_local()
-    ids = await asyncio.gather(*(poll_endpoint(p.id, e.category, scheduled_for=None, timeout_s=90, retries=0)
-                                 for p, e in targets))
+
+    async def one(pid: int, cat: str):
+        try:
+            return await poll_endpoint(pid, cat, scheduled_for=None, timeout_s=90, retries=0)
+        except Exception:  # noqa: BLE001 - one plant's failure must not sink the run
+            log.exception("poll now failed %s/%s", pid, cat)
+            return None
+        finally:
+            if on_done:
+                on_done()
+
+    ids = await asyncio.gather(*(one(p.id, e.category) for p, e in targets))
     after = await _open_alerts(s, pairs)
     cleared = {}
     if before:
@@ -359,17 +520,29 @@ async def _run_now(s: AsyncSession, targets: list[tuple[Plant, PlantEndpoint]]) 
         if gone:
             cleared = {a.id: a for a in (await s.execute(select(AlertLog).where(AlertLog.id.in_(gone))
                                                           .execution_options(populate_existing=True))).scalars()}
+    # Attempts and flags for every call in two queries, not two per call (a fleet run has 500+ calls).
+    got = [i for i in ids if i]
+    attempts = {a.id: a for a in (await s.execute(select(PollAttempt).where(PollAttempt.id.in_(got)))).scalars()} \
+        if got else {}
+    flags_by: dict[int, list] = {}
+    if got:
+        for f in (await s.execute(select(ComplianceFlag).where(ComplianceFlag.poll_attempt_id.in_(got))
+                                  .order_by(ComplianceFlag.id))).scalars():
+            flags_by.setdefault(f.poll_attempt_id, []).append(f)
+    alerts_by: dict[tuple[int, str], dict[str, list]] = {}
+    for kind, d in (("after", after), ("cleared", cleared)):
+        for x in d.values():
+            alerts_by.setdefault((x.plant_id, x.category), {"after": [], "cleared": []})[kind].append(x)
     results = []
     for (p, e), aid in zip(targets, ids):
         s.add(ScheduleRun(schedule_id=None, plant_id=p.id, category=e.category, due_at=now, enqueued_at=now,
                           status="manual", poll_attempt_id=aid))
-        a = await s.get(PollAttempt, aid) if aid else None
-        flags = (await s.execute(select(ComplianceFlag).where(ComplianceFlag.poll_attempt_id == aid))
-                 ).scalars().all() if aid else []
+        a = attempts.get(aid) if aid else None
+        flags = flags_by.get(aid, []) if aid else []
         majors = [f for f in flags if f.severity == "major"]
         minors = [f for f in flags if f.severity == "minor"]
         verdict, reason = _verdict(a, majors, minors)
-        mine = lambda d: [_alert_out(x) for x in d.values() if x.plant_id == p.id and x.category == e.category]
+        mine = alerts_by.get((p.id, e.category), {"after": [], "cleared": []})
         results.append({
             "plant": p.mnemonic, "category": e.category, "url": e.url, "polled": off_reason(sw, p, e) is None,
             "off_reason": off_reason(sw, p, e), "verdict": verdict, "reason": reason,
@@ -377,9 +550,9 @@ async def _run_now(s: AsyncSession, targets: list[tuple[Plant, PlantEndpoint]]) 
             "bytes": a.bytes if a else None, "attempt_id": aid, "tested_at": a.started_at if a else now,
             "major": [f.message for f in majors], "minor": [f.message for f in minors],
             "alerts": {
-                "raised": [x for x in mine(after) if x["id"] not in before],
-                "ongoing": [x for x in mine(after) if x["id"] in before],
-                "cleared": mine(cleared),
+                "raised": [_alert_out(x) for x in mine["after"] if x.id not in before],
+                "ongoing": [_alert_out(x) for x in mine["after"] if x.id in before],
+                "cleared": [_alert_out(x) for x in mine["cleared"]],
             },
         })
     order = {c: i for i, c in enumerate(CATEGORIES)}
@@ -413,6 +586,7 @@ async def test_plant(mnem: str, category: str | None = None, admin: AppUser = De
 class PollNowIn(BaseModel):
     plants: list[str] | None = None  # None = every plant
     category: str | None = None      # None = every endpoint
+    region: str | None = None        # limit the plants to one region
 
     @model_validator(mode="after")
     def check(self):
@@ -421,35 +595,95 @@ class PollNowIn(BaseModel):
         return self
 
 
+_background: set[asyncio.Task] = set()
+
+
+async def _execute_run(run_id: int, pairs: list[tuple[int, str]], user_id: int | None):
+    """Carry out a Poll now run in the background, saving progress as calls finish and the results at the end."""
+    done = 0
+
+    def tick():
+        nonlocal done
+        done += 1
+
+    async def progress():
+        last = -1
+        while True:
+            await asyncio.sleep(1.5)
+            if done != last:
+                last = done
+                async with SessionLocal() as s2:
+                    await s2.execute(update(PollRun).where(PollRun.id == run_id).values(done=done))
+                    await s2.commit()
+
+    reporter = asyncio.create_task(progress())
+    try:
+        async with SessionLocal() as s:
+            plants = {p.id: p for p in (await s.execute(select(Plant).where(
+                Plant.id.in_({pid for pid, _ in pairs})))).scalars().all()}
+            targets = []
+            for pid, cat in pairs:
+                p = plants.get(pid)
+                e = next((x for x in p.endpoints if x.category == cat), None) if p else None
+                if e is not None:
+                    targets.append((p, e))
+            results = await _run_now(s, targets, on_done=tick)
+            summary = _summary(results)
+            run = await s.get(PollRun, run_id)
+            run.results, run.summary, run.status = _jsonable(results), summary, "done"
+            run.done, run.total, run.finished_at = len(results), len(results), now_local()
+            s.add(AuditEvent(ts=now_local(), user_id=user_id, action="poll.manual", entity="poll_run",
+                             entity_id=str(run_id), after={"plants": run.plants or "all",
+                                                           "category": run.category or "all", **summary}))
+            await s.commit()
+    except Exception as e:  # noqa: BLE001
+        log.exception("poll now run %s failed", run_id)
+        async with SessionLocal() as s:
+            await s.execute(update(PollRun).where(PollRun.id == run_id).values(
+                status="failed", finished_at=now_local(), summary={"error": str(e)[:300]}))
+            await s.commit()
+    finally:
+        reporter.cancel()
+
+
 @router.post("/poll-now")
 async def poll_now_scope(body: PollNowIn, admin: AppUser = Depends(require_admin),
                          s: AsyncSession = Depends(get_session)):
-    """Ad-hoc poll of the whole fleet, some plants, one endpoint type, or one endpoint of one plant.
+    """Ad-hoc poll of the whole fleet, a region, some plants, one endpoint type, or one endpoint of one plant.
     Runs even while polling is paused, stores and validates like a scheduled poll, and reports the
-    alerts each call raised, kept open or cleared."""
+    alerts each call raised, kept open or cleared.
+
+    The run goes on in the background, so a fleet of hundreds of plants works too: the request waits up
+    to poll_now_wait_s (20 s) and returns the finished run, or the run so far (status running, done of
+    total) for the client to follow at GET /admin/poll-runs/{id}."""
+    cfg = get_settings()
     q = select(Plant).order_by(Plant.mnemonic)
     if body.plants:
         q = q.where(Plant.mnemonic.in_([m.lower() for m in body.plants]))
+    if body.region:
+        q = q.where(Plant.region.is_(None) if body.region == "No region" else Plant.region == body.region)
     plants = (await s.execute(q)).scalars().all()
-    if body.plants and len(plants) != len(set(m.lower() for m in body.plants)):
+    if body.plants and not body.region and len(plants) != len(set(m.lower() for m in body.plants)):
         raise HTTPException(404, "Plant not found")
     targets = [(p, e) for p in plants for e in p.endpoints
                if e.url and (body.category is None or e.category == body.category)]
     if not targets:
         raise HTTPException(400, "No matching endpoint")
-    if len(targets) > 200:
-        raise HTTPException(400, "Too many endpoints for one ad-hoc poll")
-    started = now_local()
-    results = await _run_now(s, targets)
-    summary = _summary(results)
-    run = PollRun(started_at=started, finished_at=now_local(), user_id=admin.id,
-                  plants=sorted(p.mnemonic for p in plants) if body.plants else None,
-                  category=body.category, summary=summary, results=_jsonable(results))
+    if len(targets) > cfg.poll_now_max_endpoints:
+        raise HTTPException(400, f"Too many endpoints for one ad-hoc poll ({len(targets)}; the limit is "
+                                 f"{cfg.poll_now_max_endpoints}). Choose fewer plants or one API.")
+    scope = sorted(p.mnemonic for p in plants) if body.plants or body.region else None
+    run = PollRun(started_at=now_local(), user_id=admin.id, plants=scope, category=body.category,
+                  status="running", total=len(targets), done=0, summary={}, results=[])
     s.add(run)
-    await s.flush()
-    await audit(s, admin, "poll.manual", "poll_run", run.id, None,
-                {"plants": run.plants or "all", "category": body.category or "all", **summary})
     await s.commit()
+    task = asyncio.create_task(_execute_run(run.id, [(p.id, e.category) for p, e in targets], admin.id))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    t0 = _time.monotonic()
+    while not task.done() and _time.monotonic() - t0 < cfg.poll_now_wait_s:
+        await asyncio.sleep(0.25)
+    await s.refresh(run)
     return await _run_out(s, run, full=True)
 
 
@@ -457,16 +691,18 @@ async def _run_out(s: AsyncSession, r: PollRun, full: bool) -> dict:
     email = (await s.execute(select(AppUser.email).where(AppUser.id == r.user_id))).scalar_one_or_none() \
         if r.user_id else None
     out = {"id": r.id, "polled_at": r.started_at, "finished_at": r.finished_at, "by": email,
-           "plants": r.plants, "category": r.category, "summary": r.summary, "count": len(r.results or [])}
+           "plants": r.plants, "category": r.category, "summary": r.summary, "status": r.status,
+           "done": r.done, "total": r.total, "count": len(r.results or []) or r.total}
     if full:
         out["results"] = r.results
     return out
 
 
 @router.get("/poll-runs")
-async def list_poll_runs(limit: int = 20, admin: AppUser = Depends(require_admin),
+async def list_poll_runs(limit: int = 20, offset: int = 0, admin: AppUser = Depends(require_admin),
                          s: AsyncSession = Depends(get_session)):
-    rows = (await s.execute(select(PollRun).order_by(PollRun.id.desc()).limit(min(max(limit, 1), 200)))).scalars().all()
+    rows = (await s.execute(select(PollRun).order_by(PollRun.id.desc()).limit(min(max(limit, 1), 200))
+                            .offset(max(offset, 0)))).scalars().all()
     return [await _run_out(s, r, full=False) for r in rows]
 
 
@@ -608,8 +844,20 @@ async def update_deadline(did: int, body: DeadlineIn, admin: AppUser = Depends(r
 
 # ---------------------------------------------------------------- audit
 @router.get("/audit")
-async def audit_log(limit: int = 200, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
-    rows = (await s.execute(select(AuditEvent, AppUser.email).outerjoin(AppUser, AppUser.id == AuditEvent.user_id)
-                            .order_by(AuditEvent.ts.desc(), AuditEvent.id.desc()).limit(min(limit, 1000)))).all()
-    return [{"id": a.id, "ts": a.ts, "user": e, "action": a.action, "entity": a.entity, "entity_id": a.entity_id,
-             "before": a.before, "after": a.after} for a, e in rows]
+async def audit_log(q: str | None = None, action: str | None = None, offset: int = 0, limit: int = 100,
+                    admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    """The audit log, newest first, one page at a time. q matches the user, action, target or change."""
+    cond = []
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        cond.append(or_(AppUser.email.ilike(like), AuditEvent.action.ilike(like), AuditEvent.entity.ilike(like),
+                        AuditEvent.entity_id.ilike(like), func.cast(AuditEvent.after, Text).ilike(like)))
+    if action:
+        cond.append(AuditEvent.action.like(f"{action}%"))
+    base = select(AuditEvent, AppUser.email).outerjoin(AppUser, AppUser.id == AuditEvent.user_id).where(*cond)
+    total = (await s.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+    rows = (await s.execute(base.order_by(AuditEvent.ts.desc(), AuditEvent.id.desc())
+                            .limit(max(1, min(limit, 1000))).offset(max(0, offset)))).all()
+    return {"rows": [{"id": a.id, "ts": a.ts, "user": e, "action": a.action, "entity": a.entity,
+                      "entity_id": a.entity_id, "before": a.before, "after": a.after} for a, e in rows],
+            "total": total, "offset": offset, "limit": limit}

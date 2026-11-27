@@ -66,12 +66,12 @@ export default function App() {
   let body;
   if (page === "plant" && arg) body = <PlantPage mnem={arg} user={user} />;
   else if (page === "attempt" && arg) body = <Inspect key={arg} id={arg} canPoll={isAdmin} />;
-  else if (page === "alerts") body = <Alerts canAck={isGso} />;
-  else if (page === "compliance") body = <Compliance />;
+  else if (page === "alerts") body = <Alerts key={query} canAck={isGso} query={query} />;
+  else if (page === "compliance") body = <Compliance key={query} query={query} />;
   else if (page === "reports") body = <Reports key={route} query={query} />;
   else if (page === "admin" && isAdmin && arg === "plants" && sub === "new") body = <PlantForm key="new" />;
   else if (page === "admin" && isAdmin && arg === "plants" && sub) body = <PlantForm key={sub} mnem={sub} />;
-  else if (page === "admin" && isAdmin && arg === "plants") body = <PlantsList />;
+  else if (page === "admin" && isAdmin && arg === "plants") body = <PlantsList query={query} />;
   else if (page === "admin" && isAdmin && arg === "poll")
     body = sub === "runs"
       ? <PollNow key={route} runId={sub2} />
@@ -79,7 +79,7 @@ export default function App() {
   else if (page === "admin" && isAdmin && arg === "users") body = <AdminUsers />;
   else if (page === "admin" && isAdmin && arg === "schedules") body = <AdminSchedules />;
   else if (page === "admin" && isAdmin && arg === "audit") body = <AdminAudit />;
-  else body = <Fleet isAdmin={isAdmin} />;
+  else body = <Fleet key={query} isAdmin={isAdmin} query={query} />;
 
   const link = (href: string, label: string, icon: string) => {
     const on = ("#" + route).startsWith(href) && (href !== "#/" || route === "/" || route.startsWith("/plant/") || route.startsWith("/attempt/"));

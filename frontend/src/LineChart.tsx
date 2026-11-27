@@ -23,7 +23,8 @@ export default function LineChart({ points }: { points: P[] }) {
   };
   return (
     <div className="chart">
-      <svg viewBox={`0 0 ${W} ${H}`} onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img" aria-label="Forecast MW">
+      <svg viewBox={`0 0 ${W} ${H}`} onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img"
+        aria-label={`Forecast, ${points.length} points from ${points[0].t.replace("T", " ").slice(0, 16)} to ${points[points.length - 1].t.replace("T", " ").slice(0, 16)}, peak ${Math.max(...vals)} MW`}>
         {ticks.map(v => (
           <g key={v}><line x1={L} x2={W - R} y1={y(v)} y2={y(v)} className="grid" />
             <text x={L - 6} y={y(v) + 4} textAnchor="end" className="axis">{v}</text></g>
@@ -40,8 +41,8 @@ export default function LineChart({ points }: { points: P[] }) {
             <circle cx={x(hover)} cy={y(points[hover].mw ?? 0)} r={4} className="pt" /></g>
         )}
       </svg>
-      <div className="chart-readout">
-        {hover !== null ? <>{points[hover].t.replace("T", " ").slice(0, 16)} · <b>{points[hover].mw ?? "—"} MW</b></> : <>{points.length} points · MW</>}
+      <div className="chart-readout" aria-live="off">
+        {hover !== null ? <>{points[hover].t.replace("T", " ").slice(0, 16)} · <b>{points[hover].mw ?? "—"} MW</b></> : <>{points.length} points · peak {Math.max(...vals)} MW · hover for values</>}
       </div>
     </div>
   );

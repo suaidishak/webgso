@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, CATS, CAT_LABEL, fmt, User } from "../api";
 import LineChart from "../LineChart";
+import Icon, { Skeleton, Spinner } from "../Icon";
 
 type Flag = { rule: string; severity: string; message: string; ts: string };
 
@@ -76,43 +77,45 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
   const [busy, setBusy] = useState(false);
   const [tick, setTick] = useState(0);
   const [err, setErr] = useState("");
+  const [pollErr, setPollErr] = useState("");
   useEffect(() => { api(`/plants/${mnem}`).then(setPlant).catch(e => setErr(e.message)); }, [mnem]);
   useEffect(() => { api(`/plants/${mnem}/attempts?category=${cat}&limit=20`).then(setAttempts); }, [mnem, cat, tick]);
   if (err) return <div className="error">{err}</div>;
-  if (!plant) return <p className="muted">Loading…</p>;
+  if (!plant) return <Skeleton rows={6} />;
   const ep = plant.endpoints.find((e: any) => e.category === cat);
   const pollNow = async () => {
-    setBusy(true);
+    setBusy(true); setPollErr("");
     try { await api(`/admin/plants/${mnem}/poll?category=${cat}`, { method: "POST" }); setTick(t => t + 1); }
-    catch (e: any) { alert(e.message); }
+    catch (e: any) { setPollErr(`Poll failed: ${e.message}`); }
     setBusy(false);
   };
   return (
     <>
       <div className="title-row">
-        <h2><a href="#/" className="muted">Fleet</a> / {plant.mnemonic.toUpperCase()}</h2>
-        {plant.capacity_mw && <span className="muted">{plant.capacity_mw} MW</span>}
+        <h2 className="crumbs"><a href="#/">Fleet</a><span className="sep" aria-hidden="true">/</span>{plant.mnemonic.toUpperCase()}</h2>
+        {plant.capacity_mw && <span className="badge">{plant.capacity_mw} MW</span>}
         {plant.name && plant.name.toLowerCase() !== plant.mnemonic && <span className="muted">{plant.name}</span>}
-        {user.role === "gso_admin" && <a className="button ghost" href={`#/admin/plants/${plant.mnemonic}`}>Edit plant</a>}
+        {user.role === "gso_admin" && <a className="button ghost push-right" href={`#/admin/plants/${plant.mnemonic}`}>Edit plant</a>}
       </div>
-      <div className="tabs">
-        {CATS.map(c => <button key={c} className={c === cat ? "on" : ""} onClick={() => setCat(c)}>{CAT_LABEL[c]}</button>)}
+      <div className="tabs" role="tablist" aria-label="Endpoint">
+        {CATS.map(c => <button key={c} role="tab" aria-selected={c === cat} aria-controls="ep-panel" className={c === cat ? "on" : ""} onClick={() => { setCat(c); setPollErr(""); }}>{CAT_LABEL[c]}</button>)}
       </div>
-      <div className="card">
+      <div className="card" id="ep-panel" role="tabpanel">
         <div className="endpoint">
           <code>{ep?.url}</code>
           {ep && !ep.enabled && <span className="badge">not polled{ep.note ? `: ${ep.note}` : ""}</span>}
-          {user.role === "gso_admin" && ep && <button onClick={pollNow} disabled={busy}>{busy ? "Polling…" : "Poll now"}</button>}
+          {user.role === "gso_admin" && ep && <button onClick={pollNow} disabled={busy}>{busy ? <><Spinner />Polling…</> : <><Icon name="zap" />Poll now</>}</button>}
         </div>
+        {pollErr && <div className="error" role="alert">{pollErr}</div>}
         <div key={tick}>{cat === "mmf" ? <Mmf mnem={mnem} /> : <Forecast mnem={mnem} cat={cat} />}</div>
       </div>
       <h3>Recent polls</h3>
       <div className="table-wrap"><table>
         <thead><tr><th>Started</th><th>Scheduled</th><th>HTTP</th><th className="num">Latency</th><th className="num">Size</th><th>Result</th><th>Error</th><th></th></tr></thead>
-        <tbody>{attempts.map(a => (
+        <tbody>{!attempts.length && <tr><td colSpan={8} className="muted">No polls of this endpoint yet.</td></tr>}{attempts.map(a => (
           <tr key={a.id}><td>{fmt(a.started_at)}</td><td>{a.scheduled_for ? fmt(a.scheduled_for).slice(11) : "manual"}</td>
             <td>{a.http_status ?? "—"}</td><td className="num">{a.latency_ms} ms</td><td className="num">{a.bytes ? `${Math.round(a.bytes / 1024)} KB` : "—"}</td>
-            <td><i className={`dot ${a.http_status !== 200 ? "down" : a.is_valid ? (a.minor_flags ? "minor" : "ok") : "invalid"}`} />
+            <td className="nowrap"><i aria-hidden="true" className={`dot ${a.http_status !== 200 ? "down" : a.is_valid ? (a.minor_flags ? "minor" : "ok") : "invalid"}`} />
               {a.major_flags} major, {a.minor_flags} minor</td><td className="small">{a.error}</td>
             <td><a href={`#/attempt/${a.id}`}>Inspect</a></td></tr>
         ))}</tbody>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, CAT_LABEL, fmt } from "../api";
+import Icon, { Skeleton } from "../Icon";
 
 /* Raw response inspector: shows the exact JSON a plant returned, with every place that caused a
    compliance finding highlighted (red = major, amber = minor). Findings are listed on the right;
@@ -115,8 +116,8 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
     setFlash(line);
   };
 
-  if (err) return <div className="error">{err}</div>;
-  if (!d) return <p className="muted">Loading…</p>;
+  if (err) return <div className="error" role="alert">{err}</div>;
+  if (!d) return <Skeleton rows={embedded ? 4 : 10} />;
   const a = d.attempt;
   const sevOf = (fis: number[]) => (fis.some(i => flags[i].severity === "major") ? "major" : "minor");
   const tip = (fis: number[]) => fis.map(i => `[${flags[i].severity.toUpperCase()}] ${flags[i].rule}: ${flags[i].message}`).join("\n");
@@ -136,9 +137,9 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
   return (
     <>
       {!embedded && <div className="title-row">
-        <h2><a href="#/" className="muted">Fleet</a> / <a href={`#/plant/${d.plant.mnemonic}`} className="muted">{d.plant.mnemonic.toUpperCase()}</a> / {CAT_LABEL[a.category]} response</h2>
-        <span className="cell-state"><i className={`dot ${status}`} />{STATUS[status]}</span>
-        {canPoll && <a className="button ghost poll-link" href={`#/admin/poll/${d.plant.mnemonic}/${a.category}/run`}>Poll this API now</a>}
+        <h2 className="crumbs"><a href="#/">Fleet</a><span className="sep" aria-hidden="true">/</span><a href={`#/plant/${d.plant.mnemonic}`}>{d.plant.mnemonic.toUpperCase()}</a><span className="sep" aria-hidden="true">/</span>{CAT_LABEL[a.category]} response</h2>
+        <span className="cell-state"><i className={`dot ${status}`} aria-hidden="true" />{STATUS[status]}</span>
+        {canPoll && <a className="button ghost poll-link" href={`#/admin/poll/${d.plant.mnemonic}/${a.category}/run`}><Icon name="zap" />Poll this API now</a>}
       </div>}
       <div className="facts">
         <div><span>Polled</span>{fmt(a.started_at)}{a.scheduled_for ? "" : " (manual)"}</div>
@@ -159,7 +160,7 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
           ) : parsed == null ? (
             <pre className="json-text hl major">{d.raw.body_text}</pre>
           ) : (
-            <div className="json" ref={box} onScroll={e => setScrollTop(e.currentTarget.scrollTop)}>
+            <div className="json" ref={box} tabIndex={0} role="region" aria-label="Raw JSON response" onScroll={e => setScrollTop(e.currentTarget.scrollTop)}>
               <div style={{ height: lines.length * ROW, position: "relative" }}>
                 {visible.map((l, k) => {
                   const i = first + k;
@@ -181,7 +182,7 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
           )}
         </div>
 
-        <aside className="findings">
+        <aside className="findings" aria-label="Findings">
           <div className="findings-head">
             <b>Findings</b>
             <label><input type="checkbox" checked={show.major} onChange={e => setShow({ ...show, major: e.target.checked })} /> Major</label>
@@ -193,15 +194,16 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
             const occ = occurrences[fi];
             return (
               <div key={f.id} className={`finding ${f.severity} ${active === fi ? "on" : ""} ${show[f.severity] ? "" : "hidden"}`}
-                onClick={() => jump(fi, 0)}>
+                role="button" tabIndex={0} aria-pressed={active === fi}
+                onClick={() => jump(fi, 0)} onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); jump(fi, 0); } }}>
                 <div><span className={`sev ${f.severity}`}>{f.severity}</span><code>{f.rule}</code></div>
                 <div className="msg">{f.message}</div>
                 {f.whole_response ? <div className="small muted">Applies to the whole response</div> : (
                   <div className="nav small" onClick={e => e.stopPropagation()}>
                     <span className="muted">{f.paths.length === 1 ? "1 place" : `${f.paths.length} places`}{occ.length !== f.paths.length ? ` on ${occ.length} line${occ.length === 1 ? "" : "s"}` : ""}{active === fi && occ.length > 1 ? ` · line ${(pos[fi] ?? 0) + 1} of ${occ.length}` : ""}</span>
                     {occ.length > 1 && <>
-                      <button className="ghost small-btn" onClick={() => jump(fi, -1)} aria-label="Previous">‹</button>
-                      <button className="ghost small-btn" onClick={() => jump(fi, 1)} aria-label="Next">›</button>
+                      <button className="ghost small-btn" onClick={() => jump(fi, -1)} aria-label="Previous place">‹</button>
+                      <button className="ghost small-btn" onClick={() => jump(fi, 1)} aria-label="Next place">›</button>
                     </>}
                     {occ.length === 1 && <button className="ghost small-btn" onClick={() => jump(fi, 0)}>Show</button>}
                   </div>

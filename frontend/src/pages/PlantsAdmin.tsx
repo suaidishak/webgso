@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api, CATS, CAT_LABEL, fmt } from "../api";
+import Icon, { Skeleton, Spinner } from "../Icon";
 
 type Endpoint = { category: string; url: string; enabled: boolean; note: string | null; polled?: boolean; off_reason?: string | null };
 type PlantRow = {
@@ -12,7 +13,7 @@ type Polling = { fleet: boolean; types: Record<string, boolean> };
 export function Switch({ on, onChange, label, disabled, title }: { on: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean; title?: string }) {
   return (
     <label className={`switch ${on ? "on" : ""} ${disabled ? "dis" : ""}`} title={title}>
-      <input type="checkbox" role="switch" checked={on} disabled={disabled} onChange={e => onChange(e.target.checked)} />
+      <input type="checkbox" role="switch" aria-label={label ? undefined : title} checked={on} disabled={disabled} onChange={e => onChange(e.target.checked)} />
       <span className="track"><span className="knob" /></span>
       {label && <span className="switch-label">{label}</span>}
     </label>
@@ -90,7 +91,7 @@ export async function runTest(mnem: string, category?: string): Promise<TestResu
 
 export function Verdict({ r }: { r: TestResult | "running" | undefined }) {
   if (r === undefined) return <span className="muted small">Not tested</span>;
-  if (r === "running") return <span className="verdict running">Testing…</span>;
+  if (r === "running") return <span className="verdict running"><Spinner />Testing…</span>;
   const all = [...r.major.map(m => ["major", m]), ...r.minor.map(m => ["minor", m])];
   return (
     <span className="verdict-wrap">
@@ -129,11 +130,11 @@ function useTests() {
 function PlantSummary({ p, tests }: { p: PlantRow; tests: TestState }) {
   const rs = p.endpoints.map(e => tests[`${p.mnemonic}:${e.category}`]).filter(Boolean);
   if (!rs.length) return null;
-  if (rs.includes("running")) return <span className="verdict running">Testing…</span>;
+  if (rs.includes("running")) return <span className="verdict running"><Spinner />Testing…</span>;
   const done = rs as TestResult[];
   const n = (v: string) => done.filter(r => r.verdict === v).length;
   return (
-    <span className="small">
+    <span className="small actions">
       {n("pass") > 0 && <span className="verdict pass">{n("pass")} pass</span>}{" "}
       {n("warn") > 0 && <span className="verdict warn">{n("warn")} warn</span>}{" "}
       {n("fail") > 0 && <span className="verdict fail">{n("fail")} fail</span>}
@@ -161,9 +162,10 @@ export function PlantsList() {
   };
   const onPolling = (pl: Polling) => { setPolling(pl); api<PlantRow[]>("/plants").then(setRows); };
   const testPlant = (p: PlantRow) => { setOpen(o => ({ ...o, [p.mnemonic]: true })); return test(p.mnemonic, p.endpoints.map(e => e.category)); };
-  const testAll = async () => { for (const p of shown) await testPlant(p); };
+  const [testingAll, setTestingAll] = useState(false);
+  const testAll = async () => { setTestingAll(true); try { for (const p of shown) await testPlant(p); } finally { setTestingAll(false); } };
   useEffect(() => { load(); }, []);
-  if (!rows) return <p className="muted">Loading…</p>;
+  if (!rows) return <Skeleton rows={8} />;
   const shown = rows.filter(p => !q || (p.mnemonic + " " + p.name).toLowerCase().includes(q.toLowerCase()));
   return (
     <>
@@ -171,21 +173,22 @@ export function PlantsList() {
         <h2>Plants</h2>
         <span className="muted small">{rows.length} registered</span>
         <span style={{ flex: 1 }} />
-        <input placeholder="Search" value={q} onChange={e => setQ(e.target.value)} />
-        <button className="ghost" onClick={testAll}>Test all plants</button>
-        <a className="button" href="#/admin/plants/new">Add plant</a>
+        <input className="search" type="search" placeholder="Search plants" aria-label="Search plants" value={q} onChange={e => setQ(e.target.value)} />
+        <button className="ghost" onClick={testAll} disabled={testingAll || !shown.length}>{testingAll ? <><Spinner />Testing…</> : "Test all plants"}</button>
+        <a className="button" href="#/admin/plants/new"><Icon name="plus" />Add plant</a>
       </div>
       <p className="muted small">The poller reads this registry and the polling switches on every tick, so changes apply within 30 seconds. An endpoint is polled only when the fleet, its endpoint type, its plant and the endpoint itself are all switched on (and the plant is live). API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule.</p>
       {polling && <PollingPanel polling={polling} onChange={onPolling} />}
-      {err && <div className="error">{err}</div>}
-      {toggleErr && <div className="error">{toggleErr}</div>}
+      {err && <div className="error" role="alert">{err}</div>}
+      {toggleErr && <div className="error" role="alert">{toggleErr}</div>}
       <div className="table-wrap"><table>
-        <thead><tr><th></th><th>Plant</th><th>Polling</th><th>Status</th><th className="num">Capacity</th><th>Endpoints polled</th><th>API key</th><th>Last test</th><th></th></tr></thead>
-        <tbody>{shown.map(p => (<Fragment key={p.mnemonic}>
+        <thead><tr><th><span className="sr-only">Expand</span></th><th>Plant</th><th>Polling</th><th>Status</th><th className="num">Capacity</th><th>Endpoints polled</th><th>API key</th><th>Last test</th><th></th></tr></thead>
+        <tbody>{!shown.length && <tr><td colSpan={9} className="muted">{q ? `No plants match "${q}".` : "No plants yet. Add one to start polling."}</td></tr>}{shown.map(p => (<Fragment key={p.mnemonic}>
           <tr>
-            <td><button className="ghost icon" aria-label="Show endpoints" onClick={() => setOpen(o => ({ ...o, [p.mnemonic]: !o[p.mnemonic] }))}>{open[p.mnemonic] ? "▾" : "▸"}</button></td>
-            <td><a href={`#/plant/${p.mnemonic}`}><b>{p.mnemonic.toUpperCase()}</b></a><div className="small muted">{p.name}</div></td>
-            <td><Switch on={p.polling_enabled} onChange={v => togglePlant(p, v)} title="Pause or resume all endpoints of this plant" /></td>
+            <td><button className="ghost icon" aria-label={`Endpoints of ${p.mnemonic.toUpperCase()}`} aria-expanded={!!open[p.mnemonic]}
+              onClick={() => setOpen(o => ({ ...o, [p.mnemonic]: !o[p.mnemonic] }))}><Icon name="chevron" className="chev" /></button></td>
+            <td><a href={`#/plant/${p.mnemonic}`} className="mnem">{p.mnemonic.toUpperCase()}</a><div className="small muted">{p.name}</div></td>
+            <td><Switch on={p.polling_enabled} onChange={v => togglePlant(p, v)} title={`Polling for ${p.mnemonic.toUpperCase()}: pause or resume all its endpoints`} /></td>
             <td><span className={`badge ${p.status === "live" ? "green" : p.status === "onboarding" ? "amber" : ""}`}>{p.status}</span></td>
             <td className="num">{p.capacity_mw ? `${p.capacity_mw} MW` : "—"}</td>
             <td className="small">{CATS.filter(c => p.endpoints.some(e => e.category === c)).map(c => {
@@ -207,11 +210,11 @@ export function PlantsList() {
                   const e = p.endpoints.find(x => x.category === c)!;
                   return (
                     <tr key={c}>
-                      <td className="ep-switch"><Switch on={e.enabled} onChange={v => toggleEndpoint(p, c, v)} title="Pause or resume this endpoint" /></td>
+                      <td className="ep-switch"><Switch on={e.enabled} onChange={v => toggleEndpoint(p, c, v)} title={`Polling for ${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}`} /></td>
                       <td><b>{CAT_LABEL[c]}</b><div className={`small ${e.polled ? "good" : "muted"}`}>{e.polled ? "Polled on schedule" : e.off_reason}</div></td>
                       <td className="mono small url-cell">{e.url}</td>
                       <td><Verdict r={tests[`${p.mnemonic}:${c}`]} /></td>
-                      <td><button className="ghost small-btn" disabled={tests[`${p.mnemonic}:${c}`] === "running"} onClick={() => test(p.mnemonic, [c], c)}>Test</button></td>
+                      <td><button className="ghost small-btn" aria-label={`Test ${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}`} disabled={tests[`${p.mnemonic}:${c}`] === "running"} onClick={() => test(p.mnemonic, [c], c)}>Test</button></td>
                     </tr>
                   );
                 })}</tbody></table>
@@ -229,25 +232,37 @@ function DeleteDialog({ p, onClose, onDone }: { p: PlantRow; onClose: () => void
   const [usage, setUsage] = useState<any>(null);
   const [typed, setTyped] = useState("");
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
   useEffect(() => { api(`/admin/plants/${p.mnemonic}/usage`).then(setUsage); }, [p.mnemonic]);
+  const busyRef = useRef(false); busyRef.current = busy;
+  useEffect(() => {
+    // Escape closes the dialog; focus goes back to the button that opened it.
+    const prev = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busyRef.current) onClose(); };
+    addEventListener("keydown", onKey);
+    return () => { removeEventListener("keydown", onKey); prev?.focus?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const del = async () => {
-    try { await api(`/admin/plants/${p.mnemonic}?confirm=${encodeURIComponent(typed)}`, { method: "DELETE" }); onDone(); }
+    setBusy(true); setErr("");
+    try { await api(`/admin/plants/${p.mnemonic}?confirm=${encodeURIComponent(typed)}`, { method: "DELETE" }); onDone(); return; }
     catch (e: any) { setErr(e.message); }
+    setBusy(false);
   };
   return (
-    <div className="modal" onClick={onClose}>
-      <div className="card" onClick={e => e.stopPropagation()}>
-        <h3>Delete {p.mnemonic.toUpperCase()}?</h3>
+    <div className="modal" onClick={() => !busy && onClose()}>
+      <div className="card" role="alertdialog" aria-modal="true" aria-labelledby="del-title" onClick={e => e.stopPropagation()}>
+        <h3 id="del-title">Delete {p.mnemonic.toUpperCase()}?</h3>
         <p>This permanently removes the plant, its endpoints and key, and all of its stored history
           {usage ? <>: <b>{usage.polls}</b> polls, <b>{usage.snapshots}</b> forecast snapshots and <b>{usage.alerts}</b> alerts{usage.users ? <>, and its access for <b>{usage.users}</b> LSS user(s)</> : null}</> : null}.
           Raw responses kept as PPA evidence go too.</p>
         <p className="muted small">To stop polling but keep the history, edit the plant and set its status to <b>suspended</b> instead.</p>
         <label className="field">Type <b>{p.mnemonic.toUpperCase()}</b> to confirm
           <input value={typed} onChange={e => setTyped(e.target.value)} autoFocus /></label>
-        {err && <div className="error">{err}</div>}
+        {err && <div className="error" role="alert">{err}</div>}
         <div className="actions">
-          <button className="danger-fill" disabled={typed.toLowerCase() !== p.mnemonic} onClick={del}>Delete plant and history</button>
-          <button className="ghost" onClick={onClose}>Cancel</button>
+          <button className="ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="danger-fill push-right" disabled={busy || typed.toLowerCase() !== p.mnemonic} onClick={del}>{busy ? <><Spinner />Deleting…</> : "Delete plant and history"}</button>
         </div>
       </div>
     </div>
@@ -283,7 +298,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
     }).catch(e => setErr(e.message));
   }, [mnem]);
 
-  if (!f) return err ? <div className="error">{err}</div> : <p className="muted">Loading…</p>;
+  if (!f) return err ? <div className="error" role="alert">{err}</div> : <Skeleton rows={6} />;
   const set = (k: string, v: any) => setF({ ...f, [k]: v });
   const setEp = (i: number, k: string, v: any) => set("endpoints", f.endpoints.map((e: Endpoint, j: number) => (j === i ? { ...e, [k]: v } : e)));
   const fillFromBase = () => {
@@ -321,7 +336,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
   return (
     <>
       <div className="title-row">
-        <h2><a href="#/admin/plants" className="muted">Plants</a> / {editing ? mnem!.toUpperCase() : "New plant"}</h2>
+        <h2 className="crumbs"><a href="#/admin/plants">Plants</a><span className="sep" aria-hidden="true">/</span>{editing ? mnem!.toUpperCase() : "New plant"}</h2>
       </div>
       <div className="form-grid">
         <section className="card">
@@ -362,7 +377,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
                 <div className="inline">
                   <input type={showKey ? "text" : "password"} value={key} autoComplete="new-password" disabled={removeKey}
                     placeholder={keyPlaceholder} onChange={e => setKey(e.target.value)} />
-                  <button type="button" className="ghost" onClick={() => setShowKey(!showKey)}>{showKey ? "Hide" : "Show"}</button>
+                  <button type="button" className="ghost" aria-pressed={showKey} aria-label={showKey ? "Hide key" : "Show key"} onClick={() => setShowKey(!showKey)}>{showKey ? "Hide" : "Show"}</button>
                 </div></label>
               {f.has_api_key && (
                 <label className="toggle"><input type="checkbox" checked={removeKey} onChange={e => setRemoveKey(e.target.checked)} /> Remove the stored key</label>
@@ -378,7 +393,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
         <section className="card wide">
           <h3>Endpoints</h3>
           <div className="inline base">
-            <input placeholder="Base URL, e.g. https://ws3.gedine.work" value={base} onChange={e => setBase(e.target.value)} />
+            <input aria-label="Base URL" placeholder="Base URL, e.g. https://ws3.gedine.work" value={base} onChange={e => setBase(e.target.value)} />
             <button type="button" className="ghost" onClick={fillFromBase}>Fill all from base URL</button>
           </div>
           <p className="muted small">Each endpoint has its own full URL, because plants don't all follow the rev5 paths. Leave a URL empty if the plant doesn't serve it. Untick Poll to keep the URL but skip it.</p>
@@ -387,10 +402,10 @@ export function PlantForm({ mnem }: { mnem?: string }) {
             <tbody>{f.endpoints.map((e: Endpoint, i: number) => (
               <tr key={e.category}>
                 <td><b>{CAT_LABEL[e.category]}</b></td>
-                <td><input className="url" value={e.url} placeholder={`https://…/${f.mnemonic.toLowerCase() || "mnem"}/${DEFAULT_PATHS[e.category]}`}
+                <td><input className="url" aria-label={`${CAT_LABEL[e.category]} URL`} value={e.url} placeholder={`https://…/${f.mnemonic.toLowerCase() || "mnem"}/${DEFAULT_PATHS[e.category]}`}
                   onChange={x => setEp(i, "url", x.target.value)} /></td>
-                <td><input type="checkbox" checked={e.enabled} onChange={x => setEp(i, "enabled", x.target.checked)} /></td>
-                <td><input value={e.note ?? ""} onChange={x => setEp(i, "note", x.target.value || null)} /></td>
+                <td><input type="checkbox" aria-label={`Poll ${CAT_LABEL[e.category]}`} checked={e.enabled} onChange={x => setEp(i, "enabled", x.target.checked)} /></td>
+                <td><input aria-label={`${CAT_LABEL[e.category]} note`} value={e.note ?? ""} onChange={x => setEp(i, "note", x.target.value || null)} /></td>
                 {editing && <td className="test-cell">{e.url.trim() ? (
                   <div className="inline top">
                     <button className="ghost small-btn" disabled={tests[`${mnem}:${e.category}`] === "running"} onClick={() => test(mnem!, [e.category], e.category)}>Test</button>
@@ -401,14 +416,14 @@ export function PlantForm({ mnem }: { mnem?: string }) {
           </table></div>
         </section>
       </div>
-      {err && <div className="error">{err}</div>}
+      {err && <div className="error" role="alert">{err}</div>}
       <div className="actions bar">
-        <button onClick={save} disabled={saving}>{saving ? "Saving…" : editing ? "Save changes" : "Add plant"}</button>
-        {editing && <button className="ghost" onClick={() => test(mnem!, savedCats)} disabled={testing || !savedCats.length}>{testing ? "Testing…" : "Test all endpoints"}</button>}
+        <button onClick={save} disabled={saving}>{saving ? <><Spinner />Saving…</> : editing ? "Save changes" : "Add plant"}</button>
+        {editing && <button className="ghost" onClick={() => test(mnem!, savedCats)} disabled={testing || !savedCats.length}>{testing ? <><Spinner />Testing…</> : "Test all endpoints"}</button>}
         <a className="button ghost" href="#/admin/plants">Cancel</a>
       </div>
       {editing && <p className="muted small">Tests use the saved URL and key, so save first if you changed anything.</p>}
-      {testErr && <div className="error">{testErr}</div>}
+      {testErr && <div className="error" role="alert">{testErr}</div>}
     </>
   );
 }

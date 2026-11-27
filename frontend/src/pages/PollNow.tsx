@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, CATS, CAT_LABEL, fmt } from "../api";
 import Inspect from "./Inspect";
+import Icon, { Skeleton, Spinner } from "../Icon";
 
 type Alert = { id: number; rule: string; severity: string; message: string; raised_at: string; occurrences: number };
 type Result = {
@@ -103,13 +104,14 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
             {CATS.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}
           </select>
         </label>
-        <button onClick={() => run()} disabled={running}>{running ? "Polling…" : "Poll now"}</button>
+        <button onClick={() => run()} disabled={running}>{running ? <><Spinner />Polling…</> : <><Icon name="zap" />Poll now</>}</button>
       </div>
-      {err && <div className="error">{err}</div>}
+      {err && <div className="error" role="alert">{err}</div>}
+      {running && !out && <Skeleton rows={4} />}
 
       {out && s && (
         <>
-          <div className="poll-summary">
+          <div className="poll-summary" role="status">
             <b>{scopeLabel(out.plants, out.category)}</b><span className="muted">polled {fmt(out.polled_at)}{out.by ? ` by ${out.by}` : ""}</span>
             <span><span className="verdict pass">{s.pass} pass</span> <span className="verdict warn">{s.warn} warnings</span> <span className="verdict fail">{s.fail} fail</span></span>
             <span>Alerts: <b className={s.alerts_raised ? "txt-red" : ""}>{s.alerts_raised} new</b> · {s.alerts_ongoing} still open · <b className={s.alerts_cleared ? "txt-green" : ""}>{s.alerts_cleared} cleared</b></span>
@@ -124,7 +126,7 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
                   return (
                     <Fragment key={`${r.plant}:${r.category}`}>
                       <tr className={isOpen ? "sel" : ""}>
-                        <td><a href={`#/plant/${r.plant}`}><b>{r.plant.toUpperCase()}</b></a></td>
+                        <td><a href={`#/plant/${r.plant}`} className="mnem">{r.plant.toUpperCase()}</a></td>
                         <td>{CAT_LABEL[r.category]}{!r.polled && <div className="small muted" title={r.off_reason || ""}>paused on schedule</div>}</td>
                         <td>
                           <div className="verdict-wrap">
@@ -141,7 +143,7 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
                           {al.ongoing.map(a => <div key={a.id} className="alert-chip open" title={`Open since ${fmt(a.raised_at)}, seen ${a.occurrences} times`}><b>Still open</b> {a.rule}<span>{a.message} · since {fmt(a.raised_at)}</span></div>)}
                           {al.cleared.map(a => <div key={a.id} className="alert-chip cleared" title={a.message}><b>Cleared</b> {a.rule}<span>{a.message}</span></div>)}
                         </td>
-                        <td>{r.attempt_id && <button className="ghost small-btn" onClick={() => setOpen(isOpen ? null : r.attempt_id)}>{isOpen ? "Hide raw JSON" : "Raw JSON"}</button>}</td>
+                        <td>{r.attempt_id && <button className="ghost small-btn" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : r.attempt_id)}><Icon name="chevron" size={14} className="chev" />{isOpen ? "Hide raw JSON" : "Raw JSON"}</button>}</td>
                       </tr>
                       {isOpen && (
                         <tr className="inspect-row"><td colSpan={5}><Inspect key={r.attempt_id} id={String(r.attempt_id)} embedded /></td></tr>
@@ -159,7 +161,7 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
 
       <div className="card poll-history">
         <div className="findings-head"><b>Recent runs</b><span className="muted small">Each run has its own link, so you can come back to it or share it.</span></div>
-        {history === null ? <p className="muted small">Loading…</p> : !history.length ? <p className="muted small">No runs yet.</p> : (
+        {history === null ? <Skeleton rows={3} /> : !history.length ? <p className="muted small">No runs yet.</p> : (
           <table>
             <thead><tr><th>When</th><th>Scope</th><th>Result</th><th>Alerts</th><th>By</th></tr></thead>
             <tbody>

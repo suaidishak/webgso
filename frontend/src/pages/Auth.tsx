@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, setToken } from "../api";
+import { Spinner } from "../Icon";
 
 export function Login({ onLogin }: { onLogin: () => void }) {
   const [email, setEmail] = useState("");
@@ -17,12 +18,12 @@ export function Login({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="auth">
       <form className="card" onSubmit={submit}>
-        <h1><span className="sun" />GSO Solar Data Platform</h1>
+        <h1><span className="sun" aria-hidden="true" />GSO Solar Data Platform</h1>
         <p className="muted">Sign in with your work account.</p>
-        <label>Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus /></label>
-        <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
-        {err && <div className="error">{err}</div>}
-        <button disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+        <label>Email<input type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} required autoFocus /></label>
+        <label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
+        {err && <div className="error" role="alert">{err}</div>}
+        <button disabled={busy}>{busy ? <><Spinner />Signing in…</> : "Sign in"}</button>
         <p className="muted small">No account? <a href="#/register">Register</a>. A GSO admin approves new accounts.</p>
       </form>
     </div>
@@ -46,8 +47,8 @@ export function Register() {
     <div className="auth">
       <form className="card" onSubmit={submit}>
         <h1>Create an account</h1>
-        <label>Full name<input value={f.name} onChange={set("name")} required /></label>
-        <label>Work email<input type="email" value={f.email} onChange={set("email")} required /></label>
+        <label>Full name<input autoComplete="name" value={f.name} onChange={set("name")} required /></label>
+        <label>Work email<input type="email" autoComplete="email" value={f.email} onChange={set("email")} required /></label>
         <label>Company<input value={f.company} onChange={set("company")} required /></label>
         <label>Organisation type
           <select value={f.company_type} onChange={set("company_type")}>
@@ -55,8 +56,8 @@ export function Register() {
             <option value="GSO">GSO</option>
           </select>
         </label>
-        <label>Password (10+ characters)<input type="password" value={f.password} onChange={set("password")} minLength={10} required /></label>
-        {err && <div className="error">{err}</div>}
+        <label>Password (10+ characters)<input type="password" autoComplete="new-password" value={f.password} onChange={set("password")} minLength={10} required /></label>
+        {err && <div className="error" role="alert">{err}</div>}
         <button>Register</button>
         <p className="muted small"><a href="#/login">Back to sign in</a></p>
       </form>

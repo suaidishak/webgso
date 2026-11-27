@@ -114,11 +114,12 @@ async def poll_endpoint(plant_id: int, category: str, *, scheduled_for: datetime
 async def _ingest(s: AsyncSession, attempt: PollAttempt, plant_id: int, category: str, mnemonic: str,
                   capacity: float | None, stations: int | None, content: bytes, now: datetime) -> list[v.Flag]:
     digest = hashlib.sha256(content).hexdigest()
+    # body_text keeps the response exactly as sent (JSONB re-orders keys); body is the queryable copy.
+    body_text = content.decode("utf-8", "replace")
     try:
         body = json.loads(content)
-        body_text = None
     except (ValueError, UnicodeDecodeError):
-        body, body_text = None, content.decode("utf-8", "replace")[:200_000]
+        body = None
 
     # Landing table, de-duplicated: an unchanged response re-uses the previous raw row.
     prev = (await s.execute(select(RawResponse.id).where(

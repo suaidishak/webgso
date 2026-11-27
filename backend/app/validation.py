@@ -49,6 +49,7 @@ class Flag:
     severity: str
     message: str
     detail: dict | None = None
+    paths: list[str] = field(default_factory=list)  # JSON Pointers into the response body
 
 
 @dataclass
@@ -191,87 +192,103 @@ CATEGORY_NAMES = {
 }
 
 
+def ptr(*parts) -> str:
+    """JSON Pointer (RFC 6901) to a place in the response body, e.g. /ForecastResponse/ForecastData/5/ForecastValue."""
+    return "".join("/" + str(p).replace("~", "~0").replace("/", "~1") for p in parts)
+
+
 def validate_forecast(body, category: str, mnemonic: str, retrieved_at: datetime,
                       capacity_mw: float | None = None) -> ForecastResult:
+    """Every flag carries `paths`: JSON Pointers to the exact places in the body that caused it."""
     r = ForecastResult()
-    flag = lambda *a, **k: r.flags.append(Flag(*a, **k))  # noqa: E731
+
+    def flag(rule, sev, msg, detail=None, paths=None):
+        r.flags.append(Flag(rule, sev, msg, detail, list(paths or [])))
 
     exp_start, exp_count, early_start = expected_horizon(category, retrieved_at)
     r.expected_start, r.expected_count = exp_start, exp_count
 
     if not isinstance(body, dict):
-        flag("JSON_INVALID", MAJOR, "Response is not a JSON object")
+        flag("JSON_INVALID", MAJOR, "Response is not a JSON object", paths=[""])
         return r
-    root = body.get("ForecastResponse")
+    rk = "ForecastResponse"
+    root = body.get(rk)
     if root is None:
         alt = next((k for k in body if k.lower() == "forecastresponse"), None)
         if alt:
-            flag("KEY_NAME", MINOR, f"Root key is '{alt}', expected 'ForecastResponse'")
-            root = body[alt]
+            flag("KEY_NAME", MINOR, f"Root key is '{alt}', expected 'ForecastResponse'", paths=[ptr(alt)])
+            rk, root = alt, body[alt]
         else:
             flag("ROOT_KEY_MISSING", MAJOR, "Missing root key 'ForecastResponse'",
-                 {"keys": list(body)[:20]})
+                 {"keys": list(body)[:20]}, paths=[""])
             return r
     if not isinstance(root, dict):
-        flag("STRUCTURE", MAJOR, "'ForecastResponse' is not an object")
+        flag("STRUCTURE", MAJOR, "'ForecastResponse' is not an object", paths=[ptr(rk)])
         return r
 
     for key in ("PlantName", "ForecastCategory", "ForecastData"):
         if key not in root:
-            flag("KEY_MISSING", MAJOR if key == "ForecastData" else MINOR, f"Missing key '{key}'")
+            flag("KEY_MISSING", MAJOR if key == "ForecastData" else MINOR, f"Missing key '{key}'", paths=[ptr(rk)])
 
     name = root.get("PlantName")
     if isinstance(name, str):
         if name.strip().lower() != mnemonic.lower():
-            flag("PLANT_NAME", MAJOR, f"PlantName '{name}' does not match '{mnemonic}'")
+            flag("PLANT_NAME", MAJOR, f"PlantName '{name}' does not match '{mnemonic}'", paths=[ptr(rk, "PlantName")])
         elif name != mnemonic.lower():
-            flag("PLANT_NAME_CASE", MINOR, f"PlantName '{name}' should be lowercase '{mnemonic.lower()}'")
+            flag("PLANT_NAME_CASE", MINOR, f"PlantName '{name}' should be lowercase '{mnemonic.lower()}'",
+                 paths=[ptr(rk, "PlantName")])
 
     cat = root.get("ForecastCategory")
     if isinstance(cat, str) and cat.replace(" ", "").lower() not in CATEGORY_NAMES[category]:
-        flag("CATEGORY_NAME", MINOR, f"ForecastCategory '{cat}' on the {category} endpoint")
+        flag("CATEGORY_NAME", MINOR, f"ForecastCategory '{cat}' on the {category} endpoint",
+             paths=[ptr(rk, "ForecastCategory")])
 
     data = root.get("ForecastData")
+    dp = ptr(rk, "ForecastData")
     if not isinstance(data, list):
         if "ForecastData" in root:
-            flag("STRUCTURE", MAJOR, "'ForecastData' is not a list")
+            flag("STRUCTURE", MAJOR, "'ForecastData' is not a list", paths=[dp])
         return r
     if not data:
-        flag("EMPTY", MAJOR, "ForecastData is empty")
+        flag("EMPTY", MAJOR, "ForecastData is empty", paths=[dp])
         return r
 
-    parsed: list[tuple[datetime, datetime | None, float | None]] = []
-    string_values = bad_values = bad_times = bad_units = missing_keys = 0
-    for item in data:
+    # (start, end, value, original index)
+    parsed: list[tuple[datetime, datetime | None, float | None, int]] = []
+    p_string, p_bad_val, p_bad_time, p_unit, p_missing = [], [], [], [], []
+    for i, item in enumerate(data):
+        ip = f"{dp}/{i}"
         if not isinstance(item, dict):
-            bad_times += 1
+            p_bad_time.append(ip)
             continue
         if not {"StartTime", "EndTime", "ForecastValue", "Unit"} <= item.keys():
-            missing_keys += 1
+            p_missing.append(ip)
         st, et = parse_ts(item.get("StartTime")), parse_ts(item.get("EndTime"))
         if st is None:
-            bad_times += 1
+            p_bad_time.append(f"{ip}/StartTime" if "StartTime" in item else ip)
             continue
         val, problem = parse_number(item.get("ForecastValue"))
         if problem == "string":
-            string_values += 1
+            p_string.append(f"{ip}/ForecastValue")
         elif problem:
-            bad_values += 1
+            p_bad_val.append(f"{ip}/ForecastValue" if "ForecastValue" in item else ip)
         unit = item.get("Unit")
         if not (isinstance(unit, str) and unit.strip().upper() == "MW"):
-            bad_units += 1
-        parsed.append((st, et, val))
+            p_unit.append(f"{ip}/Unit" if "Unit" in item else ip)
+        parsed.append((st, et, val, i))
 
-    if missing_keys:
-        flag("KEY_MISSING", MAJOR, f"{missing_keys} items lack StartTime/EndTime/ForecastValue/Unit")
-    if bad_times:
-        flag("TIMESTAMP", MAJOR, f"{bad_times} items have an unreadable StartTime")
-    if string_values:
-        flag("VALUE_AS_STRING", MINOR, f"ForecastValue sent as text in {string_values} items (rev5: number)")
-    if bad_values:
-        flag("VALUE_INVALID", MAJOR, f"{bad_values} items have a missing or non-numeric ForecastValue")
-    if bad_units:
-        flag("UNIT", MINOR, f"Unit is not 'MW' in {bad_units} items")
+    if p_missing:
+        flag("KEY_MISSING", MAJOR, f"{len(p_missing)} items lack StartTime/EndTime/ForecastValue/Unit", paths=p_missing)
+    if p_bad_time:
+        flag("TIMESTAMP", MAJOR, f"{len(p_bad_time)} items have an unreadable StartTime", paths=p_bad_time)
+    if p_string:
+        flag("VALUE_AS_STRING", MINOR, f"ForecastValue sent as text in {len(p_string)} items (rev5: number)",
+             paths=p_string)
+    if p_bad_val:
+        flag("VALUE_INVALID", MAJOR, f"{len(p_bad_val)} items have a missing or non-numeric ForecastValue",
+             paths=p_bad_val)
+    if p_unit:
+        flag("UNIT", MINOR, f"Unit is not 'MW' in {len(p_unit)} items", paths=p_unit)
     if not parsed:
         return r
 
@@ -279,66 +296,70 @@ def validate_forecast(body, category: str, mnemonic: str, retrieved_at: datetime
     r.served_count = len(parsed)
     r.horizon_start = parsed[0][0]
     r.horizon_end = parsed[-1][1] or parsed[-1][0] + SLOT
+    at = lambda i, k: f"{dp}/{i}/{k}"  # noqa: E731
 
     # Slot shape: aligned to 15 min, EndTime = StartTime + 15 min, contiguous, no duplicates.
-    misaligned = sum(1 for st, _, _ in parsed if st.minute % 15 or st.second)
-    wrong_len = sum(1 for st, et, _ in parsed if et is not None and et - st != SLOT)
-    dups = gaps = 0
-    for (a, _, _), (b, _, _) in zip(parsed, parsed[1:]):
+    p_align = [at(i, "StartTime") for st, _, _, i in parsed if st.minute % 15 or st.second]
+    p_len = [at(i, "EndTime") for st, et, _, i in parsed if et is not None and et - st != SLOT]
+    p_dup, p_gap = [], []
+    for (a, _, _, _), (b, _, _, j) in zip(parsed, parsed[1:]):
         if b == a:
-            dups += 1
+            p_dup.append(at(j, "StartTime"))
         elif b - a != SLOT:
-            gaps += 1
-    if misaligned:
-        flag("SLOT_ALIGNMENT", MAJOR, f"{misaligned} slots do not start on a 15-minute boundary")
-    if wrong_len:
-        flag("SLOT_LENGTH", MAJOR, f"{wrong_len} slots are not exactly 15 minutes long")
-    if dups:
-        flag("DUPLICATE_SLOT", MAJOR, f"{dups} duplicate slots")
-    if gaps:
-        flag("GAP", MAJOR, f"{gaps} gaps between slots")
+            p_gap.append(at(j, "StartTime"))
+    if p_align:
+        flag("SLOT_ALIGNMENT", MAJOR, f"{len(p_align)} slots do not start on a 15-minute boundary", paths=p_align)
+    if p_len:
+        flag("SLOT_LENGTH", MAJOR, f"{len(p_len)} slots are not exactly 15 minutes long", paths=p_len)
+    if p_dup:
+        flag("DUPLICATE_SLOT", MAJOR, f"{len(p_dup)} duplicate slots", paths=p_dup)
+    if p_gap:
+        flag("GAP", MAJOR, f"{len(p_gap)} gaps between slots (marked at the slot after each gap)", paths=p_gap)
 
     # Horizon start
-    start = r.horizon_start
+    start, first_i = parsed[0][0], parsed[0][3]
     if category == "fourmonthsahead" and start in (exp_start, early_start):
         exp_count = fourmonth_count(start)
         r.expected_start, r.expected_count = start, exp_count
     elif start == early_start:
         r.expected_start = start
     elif start != exp_start:
+        detail = {"served": start.isoformat(), "expected": exp_start.isoformat()}
         if category == "rolling" and abs(start - exp_start) <= SLOT:
             flag("START_OFFSET", MINOR,
                  f"Rolling starts {start:%H:%M}, expected {exp_start:%H:%M} (next slot after the pull)",
-                 {"served": start.isoformat(), "expected": exp_start.isoformat()})
+                 detail, paths=[at(first_i, "StartTime")])
         else:
             flag("START_MISMATCH", MAJOR,
                  f"Horizon starts {start:%Y-%m-%d %H:%M}, expected {exp_start:%Y-%m-%d %H:%M}",
-                 {"served": start.isoformat(), "expected": exp_start.isoformat()})
+                 detail, paths=[at(first_i, "StartTime")])
 
     # Point count. Extra trailing points are minor (e.g. the 97th rolling point); short is major.
     n = len(parsed)
     if n < exp_count:
         flag("POINT_COUNT", MAJOR, f"{n} points served, {exp_count} required",
-             {"served": n, "expected": exp_count})
+             {"served": n, "expected": exp_count}, paths=[dp])
         keep = parsed
     else:
         if n > exp_count:
             flag("EXTRA_POINTS", MINOR, f"{n} points served, {exp_count} expected; extra points ignored",
-                 {"served": n, "expected": exp_count})
+                 {"served": n, "expected": exp_count}, paths=[f"{dp}/{i}" for *_, i in parsed[exp_count:]])
         keep = parsed[:exp_count]
 
     # Values
-    neg = sum(1 for *_, v in keep if v is not None and v < 0)
-    if neg:
-        flag("NEGATIVE_VALUE", MAJOR, f"{neg} negative forecast values")
+    p_neg = [at(i, "ForecastValue") for _, _, v_, i in keep if v_ is not None and v_ < 0]
+    if p_neg:
+        flag("NEGATIVE_VALUE", MAJOR, f"{len(p_neg)} negative forecast values", paths=p_neg)
     if capacity_mw:
-        over = [v for *_, v in keep if v is not None and v > capacity_mw * 1.05]
+        over = [(v_, i) for _, _, v_, i in keep if v_ is not None and v_ > capacity_mw * 1.05]
         if over:
-            flag("OVER_CAPACITY", MAJOR, f"{len(over)} values above capacity {capacity_mw} MW (max {max(over)})")
-    if all(v in (None, 0) for *_, v in keep) and category != "rolling":
-        flag("ALL_ZERO", MINOR, "Every forecast value is zero or empty")
+            flag("OVER_CAPACITY", MAJOR,
+                 f"{len(over)} values above capacity {capacity_mw} MW (max {max(v_ for v_, _ in over)})",
+                 paths=[at(i, "ForecastValue") for _, i in over])
+    if all(v_ in (None, 0) for _, _, v_, _ in keep) and category != "rolling":
+        flag("ALL_ZERO", MINOR, "Every forecast value is zero or empty", paths=[dp])
 
-    r.points = [(st, et or st + SLOT, v) for st, et, v in keep]
+    r.points = [(st, et or st + SLOT, v_) for st, et, v_, _ in keep]
     return r
 
 
@@ -353,109 +374,120 @@ def normalise_unit(u) -> str | None:
 def validate_mmf(body, mnemonic: str, retrieved_at: datetime,
                  expected_stations: int | None = None) -> MmfResult:
     r = MmfResult()
-    flag = lambda *a, **k: r.flags.append(Flag(*a, **k))  # noqa: E731
+
+    def flag(rule, sev, msg, detail=None, paths=None):
+        r.flags.append(Flag(rule, sev, msg, detail, list(paths or [])))
 
     if not isinstance(body, dict):
-        flag("JSON_INVALID", MAJOR, "Response is not a JSON object")
+        flag("JSON_INVALID", MAJOR, "Response is not a JSON object", paths=[""])
         return r
     root = body.get("MMFResponse")
     if not isinstance(root, dict):
         flag("MMF_SHAPE", MAJOR, "Response does not follow the rev5 MMFResponse structure; not ingested",
-             {"keys": list(body)[:20]})
+             {"keys": list(body)[:20]}, paths=[""])
         return r
 
     name = root.get("PlantName")
     if not isinstance(name, str):
-        flag("KEY_MISSING", MINOR, "Missing key 'PlantName'")
+        flag("KEY_MISSING", MINOR, "Missing key 'PlantName'", paths=["/MMFResponse"])
     elif name.strip().lower() != mnemonic.lower():
-        flag("PLANT_NAME", MAJOR, f"PlantName '{name}' does not match '{mnemonic}'")
+        flag("PLANT_NAME", MAJOR, f"PlantName '{name}' does not match '{mnemonic}'", paths=["/MMFResponse/PlantName"])
     elif name != mnemonic.lower():
-        flag("PLANT_NAME_CASE", MINOR, f"PlantName '{name}' should be lowercase '{mnemonic.lower()}'")
+        flag("PLANT_NAME_CASE", MINOR, f"PlantName '{name}' should be lowercase '{mnemonic.lower()}'",
+             paths=["/MMFResponse/PlantName"])
 
     data = root.get("MMFData")
     if not isinstance(data, list) or not data:
-        flag("STRUCTURE", MAJOR, "'MMFData' missing or empty")
+        flag("STRUCTURE", MAJOR, "'MMFData' missing or empty", paths=["/MMFResponse"])
         return r
 
     seen_params: set[str] = set()
+    param_path: dict[str, str] = {}
     stations: set[int] = set()
-    string_vals = missing_vals = unit_fixes = out_of_range = 0
+    p_string, p_missing, p_unitfix, p_range, p_badunit, p_badtime = [], [], [], [], [], []
     bad_units: set[str] = set()
     newest: datetime | None = None
-    bad_time = 0
+    time_paths: list[tuple[datetime, str]] = []
     malformed: list[str] = []
-    for item in data:
+    for i, item in enumerate(data):
+        ip = f"/MMFResponse/MMFData/{i}"
         if not isinstance(item, dict):
             continue
         param = item.get("Parameter")
         if not isinstance(param, str):
             continue
         seen_params.add(param)
+        param_path.setdefault(param, f"{ip}/Parameter")
         standard = param in MMF_PARAMETERS
         t = parse_ts(item.get("Time"))
         if t is None:
-            bad_time += 1
-        elif newest is None or t > newest:
-            newest = t
+            p_badtime.append(f"{ip}/Time" if "Time" in item else ip)
+        else:
+            time_paths.append((t, f"{ip}/Time"))
+            if newest is None or t > newest:
+                newest = t
         raw_unit = item.get("Unit")
         unit = normalise_unit(raw_unit)
         if unit != raw_unit:
-            unit_fixes += 1
+            p_unitfix.append(f"{ip}/Unit" if "Unit" in item else ip)
         if standard and unit and unit != MMF_PARAMETERS[param]:
             bad_units.add(f"{param}: {raw_unit}")
+            p_badunit.append(f"{ip}/Unit")
         for key, raw in item.items():
             if not (key.upper().startswith("MMF") and key[3:].isdigit()):
                 continue
+            vp = f"{ip}/{key}"
             st_no = int(key[3:])
             stations.add(st_no)
             val, problem = parse_number(raw)
             if problem == "string":
-                string_vals += 1
-            elif problem in ("nan", "sentinel"):
-                missing_vals += 1
-            elif problem == "bad":
-                missing_vals += 1
-                if len(malformed) < 5:
+                p_string.append(vp)
+            elif problem in ("nan", "sentinel", "bad"):
+                p_missing.append(vp)
+                if problem == "bad" and len(malformed) < 5:
                     malformed.append(f"{param}/{key}={raw!r}")
             if val is not None and standard:
                 lo, hi = MMF_RANGES[param]
                 if not lo <= val <= hi:
-                    out_of_range += 1
+                    p_range.append(vp)
             r.values.append(MmfValue(st_no, param, t, val, unit, standard))
 
     r.station_count = len(stations)
     missing_params = sorted(set(MMF_PARAMETERS) - seen_params)
     extra_params = sorted(seen_params - set(MMF_PARAMETERS))
     if missing_params:
-        flag("MISSING_PARAMETER", MINOR, f"{len(missing_params)} of 12 rev5 parameters missing",
-             {"missing": missing_params})
+        flag("MISSING_PARAMETER", MINOR, f"{len(missing_params)} of 12 rev5 parameters missing: "
+             + ", ".join(missing_params), {"missing": missing_params}, paths=["/MMFResponse/MMFData"])
     if extra_params:
         flag("EXTRA_PARAMETER", MINOR, f"Non-rev5 parameters stored as extras: {', '.join(extra_params)}",
-             {"extra": extra_params})
-    if string_vals:
-        flag("VALUE_AS_STRING", MINOR, f"{string_vals} values sent as text (rev5: number)")
-    if missing_vals:
-        flag("VALUE_MISSING", MINOR, f"{missing_vals} values are NaN, sentinel or unreadable",
-             {"examples": malformed} if malformed else None)
-    if unit_fixes:
-        flag("UNIT_FORMAT", MINOR, f"{unit_fixes} units normalised (e.g. C -> °C, o -> °)")
+             {"extra": extra_params}, paths=[param_path[p] for p in extra_params])
+    if p_string:
+        flag("VALUE_AS_STRING", MINOR, f"{len(p_string)} values sent as text (rev5: number)", paths=p_string)
+    if p_missing:
+        flag("VALUE_MISSING", MINOR, f"{len(p_missing)} values are NaN, sentinel or unreadable",
+             {"examples": malformed} if malformed else None, paths=p_missing)
+    if p_unitfix:
+        flag("UNIT_FORMAT", MINOR, f"{len(p_unitfix)} units normalised (e.g. C -> °C, o -> °)", paths=p_unitfix)
     if bad_units:
-        flag("UNIT", MINOR, "Unexpected units: " + "; ".join(sorted(bad_units)))
-    if out_of_range:
-        flag("OUT_OF_RANGE", MINOR, f"{out_of_range} values outside the plausible range")
+        flag("UNIT", MINOR, "Unexpected units: " + "; ".join(sorted(bad_units)), paths=p_badunit)
+    if p_range:
+        flag("OUT_OF_RANGE", MINOR, f"{len(p_range)} values outside the plausible range", paths=p_range)
     if expected_stations and r.station_count < expected_stations:
-        flag("STATION_COUNT", MAJOR, f"{r.station_count} stations reported, {expected_stations} expected")
+        flag("STATION_COUNT", MAJOR, f"{r.station_count} stations reported, {expected_stations} expected",
+             paths=["/MMFResponse/MMFData"])
     elif r.station_count < 1:
-        flag("STATION_COUNT", MAJOR, "No MMF1..n station values")
-    if bad_time:
-        flag("TIMESTAMP", MINOR, f"{bad_time} parameters have an unreadable Time")
+        flag("STATION_COUNT", MAJOR, "No MMF1..n station values", paths=["/MMFResponse/MMFData"])
+    if p_badtime:
+        flag("TIMESTAMP", MINOR, f"{len(p_badtime)} parameters have an unreadable Time", paths=p_badtime)
     if newest is None:
-        flag("STALE_MMF", MAJOR, "No readable measurement time")
+        flag("STALE_MMF", MAJOR, "No readable measurement time", paths=["/MMFResponse/MMFData"])
     elif retrieved_at - newest > MMF_MAX_AGE:
         flag("STALE_MMF", MAJOR, f"Latest reading {newest:%Y-%m-%d %H:%M} is older than "
-             f"{int(MMF_MAX_AGE.total_seconds() // 60)} min", {"latest": newest.isoformat()})
+             f"{int(MMF_MAX_AGE.total_seconds() // 60)} min", {"latest": newest.isoformat()},
+             paths=[p for _, p in time_paths])
     elif newest - retrieved_at > timedelta(minutes=5):
-        flag("FUTURE_TIME", MINOR, f"Reading time {newest:%H:%M} is in the future")
+        flag("FUTURE_TIME", MINOR, f"Reading time {newest:%H:%M} is in the future",
+             paths=[p for t, p in time_paths if t - retrieved_at > timedelta(minutes=5)])
     return r
 
 

@@ -196,8 +196,8 @@ class RawResponse(Base):
     category: Mapped[str] = mapped_column(String(30))
     received_at: Mapped[datetime] = mapped_column(DateTime)
     content_hash: Mapped[str] = mapped_column(String(64))
-    body: Mapped[dict | list | None] = mapped_column(JSONB)  # parsed JSON when valid
-    body_text: Mapped[str | None] = mapped_column(Text)  # kept only when the body is not JSON
+    body: Mapped[dict | list | None] = mapped_column(JSONB)  # parsed JSON when valid (queryable)
+    body_text: Mapped[str | None] = mapped_column(Text)  # the response exactly as received
 
 
 class ForecastSnapshot(Base):

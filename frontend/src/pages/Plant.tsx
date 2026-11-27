@@ -29,19 +29,13 @@ function Forecast({ mnem, cat }: { mnem: string; cat: string }) {
         <div><span>Expected start</span>{fmt(s.expected_start)}</div>
         <div><span>Points</span>{s.point_count} served / {s.expected_count} expected</div>
         <div><span>Status</span><b className={s.is_valid ? "good" : "bad"}>{s.is_valid ? "Valid" : "Non-compliant"}</b></div>
-        <div><span>Evidence</span><a href={`/api/v1/raw/${s.raw_response_id}`} onClick={e => { e.preventDefault(); openRaw(s.raw_response_id); }}>raw JSON #{s.raw_response_id}</a></div>
+        <div><span>Evidence</span><a href={`#/attempt/${s.poll_attempt_id}`}>Inspect raw JSON #{s.raw_response_id}</a></div>
       </div>
       <LineChart points={d.points} />
       <h4>Flags on this snapshot</h4>
       <Flags flags={d.flags} />
     </>
   );
-}
-
-async function openRaw(id: number) {
-  const r = await api(`/raw/${id}`);
-  const w = window.open("", "_blank");
-  if (w) { w.document.title = `raw ${id}`; w.document.body.innerHTML = `<pre></pre>`; w.document.querySelector("pre")!.textContent = JSON.stringify(r, null, 2); }
 }
 
 function Mmf({ mnem }: { mnem: string }) {
@@ -58,7 +52,7 @@ function Mmf({ mnem }: { mnem: string }) {
         <div><span>Polled</span>{fmt(d.attempt.started_at)}</div>
         <div><span>HTTP</span>{d.attempt.http_status ?? "—"} in {d.attempt.latency_ms} ms</div>
         <div><span>Status</span><b className={d.attempt.is_valid ? "good" : "bad"}>{d.attempt.is_valid ? "Valid" : "Non-compliant"}</b></div>
-        {d.attempt.raw_response_id && <div><span>Evidence</span><a href="#" onClick={e => { e.preventDefault(); openRaw(d.attempt.raw_response_id); }}>raw JSON #{d.attempt.raw_response_id}</a></div>}
+        {d.attempt.raw_response_id && <div><span>Evidence</span><a href={`#/attempt/${d.attempt.id}`}>Inspect raw JSON #{d.attempt.raw_response_id}</a></div>}
       </div>
       {stations.length > 0 && (
         <div className="table-wrap"><table>
@@ -114,12 +108,13 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
       </div>
       <h3>Recent polls</h3>
       <div className="table-wrap"><table>
-        <thead><tr><th>Started</th><th>Scheduled</th><th>HTTP</th><th className="num">Latency</th><th className="num">Size</th><th>Result</th><th>Error</th></tr></thead>
+        <thead><tr><th>Started</th><th>Scheduled</th><th>HTTP</th><th className="num">Latency</th><th className="num">Size</th><th>Result</th><th>Error</th><th></th></tr></thead>
         <tbody>{attempts.map(a => (
           <tr key={a.id}><td>{fmt(a.started_at)}</td><td>{a.scheduled_for ? fmt(a.scheduled_for).slice(11) : "manual"}</td>
             <td>{a.http_status ?? "—"}</td><td className="num">{a.latency_ms} ms</td><td className="num">{a.bytes ? `${Math.round(a.bytes / 1024)} KB` : "—"}</td>
             <td><i className={`dot ${a.http_status !== 200 ? "down" : a.is_valid ? (a.minor_flags ? "minor" : "ok") : "invalid"}`} />
-              {a.major_flags} major, {a.minor_flags} minor</td><td className="small">{a.error}</td></tr>
+              {a.major_flags} major, {a.minor_flags} minor</td><td className="small">{a.error}</td>
+            <td><a href={`#/attempt/${a.id}`}>Inspect</a></td></tr>
         ))}</tbody>
       </table></div>
     </>

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import validation as v
 from ..auth import current_user, plant_for_user, visible_plant_ids
 from ..config import now_local
 from ..db import get_session
@@ -110,7 +111,8 @@ async def forecast(mnem: str, category: str, as_of: datetime | None = Query(None
         "snapshot": {"id": snap.id, "retrieved_at": snap.retrieved_at, "horizon_start": snap.horizon_start,
                      "horizon_end": snap.horizon_end, "expected_start": snap.expected_start,
                      "point_count": snap.point_count, "expected_count": snap.expected_count,
-                     "is_valid": snap.is_valid, "raw_response_id": snap.raw_response_id},
+                     "is_valid": snap.is_valid, "raw_response_id": snap.raw_response_id,
+                     "poll_attempt_id": snap.poll_attempt_id},
         "points": [{"t": p.start_time, "mw": p.value_mw} for p in points],
         "flags": [flag_out(f) for f in flags],
     }
@@ -154,6 +156,44 @@ async def attempt_flags(attempt_id: int, user: AppUser = Depends(current_user), 
         raise HTTPException(404, "Not found")
     flags = (await s.execute(select(ComplianceFlag).where(ComplianceFlag.poll_attempt_id == attempt_id))).scalars().all()
     return {"attempt": attempt_out(a), "flags": [flag_out(f) for f in flags]}
+
+
+@router.get("/attempts/{attempt_id}/inspect")
+async def inspect_attempt(attempt_id: int, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
+    """A poll's raw response plus each finding with the JSON Pointers of the places that caused it.
+
+    Locations are found by re-running the (pure, deterministic) validator on the stored body with the
+    poll's own time, so nothing extra is stored per poll. The stored flags stay the record of truth;
+    a flag the re-run cannot place (e.g. HTTP errors or unchanged-content checks) applies to the
+    whole response."""
+    a = await s.get(PollAttempt, attempt_id)
+    if a is None or a.plant_id not in await visible_plant_ids(user, s):
+        raise HTTPException(404, "Not found")
+    plant = await s.get(Plant, a.plant_id)
+    raw = await s.get(RawResponse, a.raw_response_id) if a.raw_response_id else None
+    stored = (await s.execute(select(ComplianceFlag).where(ComplianceFlag.poll_attempt_id == attempt_id)
+                              .order_by(ComplianceFlag.id))).scalars().all()
+    located: dict[tuple[str, str], list[str]] = {}
+    if raw is not None and raw.body is not None:
+        if a.category == "mmf":
+            res = v.validate_mmf(raw.body, plant.mnemonic, a.started_at, plant.mmf_station_count)
+        else:
+            res = v.validate_forecast(raw.body, a.category, plant.mnemonic, a.started_at, plant.capacity_mw)
+        for f in res.flags:
+            located.setdefault((f.rule, f.severity), []).extend(f.paths)
+    flags = []
+    for f in stored:
+        paths = located.get((f.rule, f.severity))
+        flags.append({**flag_out(f), "paths": paths if paths is not None else [""],
+                      "whole_response": paths is None or paths == [""]})
+    return {
+        "attempt": attempt_out(a),
+        "plant": {"mnemonic": plant.mnemonic, "name": plant.name},
+        "raw": None if raw is None else {"id": raw.id, "received_at": raw.received_at, "sha256": raw.content_hash,
+                                         "body": raw.body, "body_text": raw.body_text,
+                                         "first_seen_attempt": raw.poll_attempt_id},
+        "flags": flags,
+    }
 
 
 @router.get("/compliance/flags")

@@ -7,6 +7,7 @@ import Alerts from "./pages/Alerts";
 import Compliance from "./pages/Compliance";
 import { AdminUsers, AdminSchedules, AdminAudit } from "./pages/Admin";
 import { PlantsList, PlantForm } from "./pages/PlantsAdmin";
+import Inspect from "./pages/Inspect";
 
 function useHash() {
   const [hash, setHash] = useState(location.hash || "#/");
@@ -40,6 +41,7 @@ export default function App() {
 
   let body;
   if (page === "plant" && arg) body = <PlantPage mnem={arg} user={user} />;
+  else if (page === "attempt" && arg) body = <Inspect key={arg} id={arg} />;
   else if (page === "alerts") body = <Alerts canAck={isGso} />;
   else if (page === "compliance") body = <Compliance />;
   else if (page === "admin" && isAdmin && arg === "plants" && sub === "new") body = <PlantForm key="new" />;

@@ -26,7 +26,7 @@ function KeyBadge({ p }: { p: PlantRow }) {
 
 type TestResult = {
   category: string; url: string; polled: boolean; verdict: "pass" | "warn" | "fail"; reason: string;
-  http_status: number | null; latency_ms: number | null; bytes: number | null; tested_at: string;
+  http_status: number | null; latency_ms: number | null; bytes: number | null; tested_at: string; attempt_id: number | null;
   major: string[]; minor: string[];
 };
 const VERDICT_LABEL = { pass: "Pass", warn: "Pass with warnings", fail: "Fail" };
@@ -45,7 +45,7 @@ export function Verdict({ r }: { r: TestResult | "running" | undefined }) {
       <span className={`verdict ${r.verdict}`}>{VERDICT_LABEL[r.verdict]}</span>
       <span className="small muted">{r.http_status ? `HTTP ${r.http_status}` : "no response"} · {r.latency_ms ?? "—"} ms
         {r.bytes ? ` · ${r.bytes >= 1024 ? Math.round(r.bytes / 1024) + " KB" : r.bytes + " B"}` : ""} · {fmt(r.tested_at).slice(11)}</span>
-      <span className="small">{r.reason}</span>
+      <span className="small">{r.reason}{r.attempt_id && r.verdict !== "pass" ? <> · <a href={`#/attempt/${r.attempt_id}`}>see where</a></> : null}</span>
       {all.length > 1 && (
         <details className="small"><summary>{r.major.length} major, {r.minor.length} minor findings</summary>
           <ul className="flags">{all.map(([sev, m], i) => <li key={i}><span className={`sev ${sev}`}>{sev}</span>{m}</li>)}</ul>

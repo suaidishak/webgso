@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, CATS, CAT_LABEL, fmt } from "../api";
 
-type Cell = { state: string; last_poll: string | null; http_status: number | null; latency_ms: number | null;
+type Cell = { state: string; attempt_id: number | null; last_poll: string | null; http_status: number | null; latency_ms: number | null;
   major_flags: number; minor_flags: number; error: string | null; last_valid: string | null; open_alerts: number };
 type Row = { mnemonic: string; name: string; status: string; cells: Record<string, Cell>; open_alerts: number };
 
@@ -41,6 +41,7 @@ export default function Fleet() {
         <div className="tile"><b>{data.plants.reduce((a, p) => a + p.open_alerts, 0)}</b><span>open alerts</span></div>
       </div>
       <Legend />
+      <p className="muted small">Click a status to open the plant's latest response with the parts that caused it highlighted.</p>
       <div className="table-wrap">
         <table className="board">
           <thead><tr><th>Plant</th>{CATS.map(c => <th key={c}>{CAT_LABEL[c]}</th>)}<th>Alerts</th></tr></thead>
@@ -53,8 +54,8 @@ export default function Fleet() {
                   if (!cell) return <td key={c} className="muted">—</td>;
                   return (
                     <td key={c}>
-                      <a href={`#/plant/${p.mnemonic}`} className={`cell ${cell.state}`}
-                        title={`${STATE_LABEL[cell.state]}\nLast poll ${fmt(cell.last_poll)}\nLast valid ${fmt(cell.last_valid)}${cell.error ? "\n" + cell.error : ""}`}>
+                      <a href={cell.attempt_id ? `#/attempt/${cell.attempt_id}` : `#/plant/${p.mnemonic}`} className={`cell ${cell.state}`}
+                        title={`${STATE_LABEL[cell.state]}\nLast poll ${fmt(cell.last_poll)}\nLast valid ${fmt(cell.last_valid)}${cell.error ? "\n" + cell.error : ""}${cell.attempt_id ? "\nClick to see what in the response caused this" : ""}`}>
                         <i className={`dot ${cell.state}`} />
                         <span>{STATE_LABEL[cell.state]}</span>
                         <small>{cell.last_poll ? fmt(cell.last_poll).slice(11) : ""}{cell.major_flags ? ` · ${cell.major_flags} major` : ""}{cell.minor_flags ? ` · ${cell.minor_flags} minor` : ""}</small>

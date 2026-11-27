@@ -162,3 +162,35 @@ def test_plant_key_encryption_and_auth_parts():
     assert k.auth_parts("none", None, "abc") == ({}, {})
     assert k.auth_parts("header", "X-API-Key", None) == ({}, {})
     assert k.scrub("GET https://x/y?apiKey=abc failed", "abc") == "GET https://x/y?apiKey=*** failed"
+
+
+def test_flags_point_at_exact_json_locations():
+    now = datetime(2026, 11, 27, 10, 30)
+    body = fc("SIDS", "dayahead", datetime(2026, 11, 28), 480, False)
+    d = body["ForecastResponse"]["ForecastData"]
+    d[3]["ForecastValue"] = "2.5"
+    d[7]["ForecastValue"] = -1
+    del d[20]
+    r = v.validate_forecast(body, "dayahead", "sids", now)
+    paths = {f.rule: f.paths for f in r.flags}
+    assert paths["PLANT_NAME_CASE"] == ["/ForecastResponse/PlantName"]
+    assert paths["VALUE_AS_STRING"] == ["/ForecastResponse/ForecastData/3/ForecastValue"]
+    assert paths["NEGATIVE_VALUE"] == ["/ForecastResponse/ForecastData/7/ForecastValue"]
+    assert paths["GAP"] == ["/ForecastResponse/ForecastData/20/StartTime"]  # item after the removed slot
+    assert paths["POINT_COUNT"] == ["/ForecastResponse/ForecastData"]
+
+    rolling = fc("kmls", "rolling", datetime(2026, 11, 27, 17, 45), 97, category_name="ActivePowerProduction")
+    r = v.validate_forecast(rolling, "rolling", "kmls", datetime(2026, 11, 27, 17, 31))
+    paths = {f.rule: f.paths for f in r.flags}
+    assert paths["EXTRA_POINTS"] == ["/ForecastResponse/ForecastData/96"]
+    assert len(paths["VALUE_AS_STRING"]) == 97
+
+
+def test_mmf_flags_point_at_values():
+    body = mmf_body("lmms", nan=True)
+    r = v.validate_mmf(body, "lmms", datetime(2026, 11, 27, 17, 31))
+    paths = {f.rule: f.paths for f in r.flags}
+    humidity = next(i for i, x in enumerate(body["MMFResponse"]["MMFData"]) if x["Parameter"] == "Humidity")
+    assert paths["VALUE_MISSING"] == [f"/MMFResponse/MMFData/{humidity}/MMF1", f"/MMFResponse/MMFData/{humidity}/MMF2"]
+    assert paths["EXTRA_PARAMETER"] == ["/MMFResponse/MMFData/12/Parameter"]
+    assert v.ptr("a/b", "c~d", 3) == "/a~1b/c~0d/3"

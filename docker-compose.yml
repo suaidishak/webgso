@@ -1,0 +1,49 @@
+# Local beta: docker compose up --build   then open http://localhost:8080
+# Offline demo against simulated plants: SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gso
+      POSTGRES_PASSWORD: gso
+      POSTGRES_DB: gso
+    volumes: [dbdata:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gso"]
+      interval: 5s
+      retries: 20
+
+  api:
+    build: ./backend
+    env_file: [{ path: .env, required: false }]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gso:gso@db:5432/gso
+      SEED_BASE_URL: ${SEED_BASE_URL:-https://ws3.gedine.work}
+    depends_on: { db: { condition: service_healthy } }
+    ports: ["8000:8000"]
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file: [{ path: .env, required: false }]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gso:gso@db:5432/gso
+      SEED_BASE_URL: ${SEED_BASE_URL:-https://ws3.gedine.work}
+    depends_on: { db: { condition: service_healthy } }
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    depends_on: [api]
+    ports: ["8080:80"]
+
+  mockplants:
+    profiles: ["mock"]
+    build: ./mockplants
+    environment:
+      MOCK_FAULTS: "sids:dayahead"
+    ports: ["9000:9000"]
+
+volumes:
+  dbdata:

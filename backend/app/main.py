@@ -1,0 +1,34 @@
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+
+from .config import get_settings, now_local
+from .db import engine
+from .routers import admin, auth, data
+from .seed import init_db
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+
+
+app = FastAPI(title="GSO Solar Data Platform (beta)", version="0.1.0", lifespan=lifespan,
+              docs_url="/api/docs", openapi_url="/api/openapi.json")
+app.add_middleware(CORSMiddleware, allow_origins=get_settings().cors_origins.split(","),
+                   allow_methods=["*"], allow_headers=["*"])
+for r in (auth.router, data.router, admin.router):
+    app.include_router(r, prefix="/api/v1")
+
+
+@app.get("/api/healthz")
+async def healthz():
+    async with engine.connect() as c:
+        await c.execute(text("SELECT 1"))
+    return {"ok": True, "time": now_local()}

@@ -19,6 +19,9 @@ const PATHS: Record<string, string> = {
   table: "M3 3h18v18H3zM3 9h18M3 15h18M9 3v18",
   download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3",
   x: "M18 6 6 18M6 6l12 12",
+  help: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01",
+  compass: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM16.24 7.76l-2.12 6.36-6.36 2.12 2.12-6.36z",
+  check: "M20 6 9 17l-5-5",
 };
 
 export default function Icon({ name, size = 16, className = "" }: { name: keyof typeof PATHS | string; size?: number; className?: string }) {

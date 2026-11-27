@@ -515,3 +515,42 @@ tbody tr.sel > td, tbody tr.sel > th { background: var(--accent-soft); }
   .picker { min-width: 0; width: 100%; }
   .bulk-actions { margin-left: 0; }
 }
+
+/* Help menu */
+.help-wrap { position: relative; }
+.help-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 250px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow); }
+.help-menu button.ghost { justify-content: flex-start; border-color: transparent; width: 100%; text-align: left; }
+.menu-check { display: inline-grid; place-items: center; width: 16px; height: 16px; border: 1.5px solid var(--line-strong); border-radius: 4px; flex: none; }
+.menu-check.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* Guided tour */
+:root { --tour-dim: rgba(2, 6, 16, .62); }
+:root[data-theme="light"] { --tour-dim: rgba(16, 24, 40, .45); }
+.tour { position: fixed; inset: 0; z-index: 200; }
+.tour-backdrop { position: absolute; inset: 0; }
+.tour-backdrop.dim { background: var(--tour-dim); }
+.tour-spot { position: fixed; border-radius: var(--radius); box-shadow: 0 0 0 200vmax var(--tour-dim), 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-soft);
+  pointer-events: none; transition: top var(--t) var(--ease), left var(--t) var(--ease), width var(--t) var(--ease), height var(--t) var(--ease); }
+.tour-bubble { position: fixed; width: min(380px, calc(100vw - 24px)); padding: 14px 16px 12px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow), 0 16px 40px rgba(0, 0, 0, .3);
+  opacity: 0; transform: translateY(4px); transition: opacity var(--t) var(--ease), transform var(--t) var(--ease); }
+.tour-bubble.shown { opacity: 1; transform: none; }
+.tour-bubble::before { content: ""; position: absolute; left: calc(var(--arrow-x, 50%) - 7px); width: 12px; height: 12px; background: var(--panel);
+  border: 1px solid var(--line-strong); transform: rotate(45deg); display: none; }
+.tour-bubble.arrow-top::before { display: block; top: -7px; border-right: 0; border-bottom: 0; }
+.tour-bubble.arrow-bottom::before { display: block; bottom: -7px; border-left: 0; border-top: 0; }
+.tour-head { display: flex; align-items: center; justify-content: space-between; }
+.tour-count { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); }
+.tour-head .icon-btn { min-height: 26px; padding: 2px 6px; border-color: transparent; }
+.tour-bubble h3 { margin: 4px 0 6px; font-size: 16px; }
+.tour-body p { margin: 0 0 8px; line-height: 1.55; }
+.tour-body p:last-child { margin-bottom: 0; }
+.tour-dots { display: flex; gap: 4px; margin: 12px 0 10px; flex-wrap: wrap; }
+.tour-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.tour-dots i.done { background: color-mix(in srgb, var(--accent) 45%, var(--line-strong)); }
+.tour-dots i.on { width: 16px; border-radius: 3px; background: var(--accent); }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 10px; }
+.tour-dont { font-size: 12.5px; color: var(--muted); min-height: 28px; }
+.tour-nav { display: flex; gap: 6px; margin-left: auto; }
+@media (prefers-reduced-motion: reduce) { .tour-spot, .tour-bubble { transition: none; } }

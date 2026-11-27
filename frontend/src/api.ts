@@ -1,7 +1,7 @@
 export type User = {
   id: number; email: string; name: string; role: string | null; status: string;
   organisation: string | null; organisation_type: string | null; plants: string[] | null;
-  created_at?: string; approved_at?: string | null; last_login_at?: string | null;
+  created_at?: string; approved_at?: string | null; last_login_at?: string | null; show_tour?: boolean;
 };
 
 const KEY = "gso_token";

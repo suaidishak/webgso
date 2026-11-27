@@ -11,8 +11,10 @@ import Inspect from "./pages/Inspect";
 import PollNow from "./pages/PollNow";
 import Reports from "./pages/Reports";
 import Icon from "./Icon";
+import Tour, { HelpMenu } from "./Tour";
 
 const THEME_KEY = "gso_theme";
+const TOUR_KEY = "gso_tour_shown";
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => document.documentElement.dataset.theme || "dark");
   useEffect(() => {
@@ -53,6 +55,27 @@ export default function App() {
     setLoaded(true);
   }, []);
   useEffect(() => { loadMe(); }, [loadMe]);
+
+  // Guided tour: opens once per login (a new token) while the user's "show at login" setting is on.
+  const [tourOpen, setTourOpen] = useState(false);
+  useEffect(() => {
+    if (!user || user.show_tour === false) return;
+    const t = (getToken() || "").slice(-24);
+    let seen: string | null = null;
+    try { seen = sessionStorage.getItem(TOUR_KEY); } catch { /* ignore */ }
+    if (t && seen !== t) {
+      try { sessionStorage.setItem(TOUR_KEY, t); } catch { /* ignore */ }
+      setTourOpen(true);
+    }
+  }, [user]);
+  const saveTourPref = useCallback(async (show: boolean) => {
+    setUser(u => (u ? { ...u, show_tour: show } : u));
+    try { await api("/auth/me/tour", { method: "PUT", body: { show } }); } catch { /* keep the local choice; it is saved next time */ }
+  }, []);
+  const closeTour = useCallback((dontShow: boolean) => {
+    setTourOpen(false);
+    if (user && dontShow === (user.show_tour !== false)) saveTourPref(!dontShow);
+  }, [user, saveTourPref]);
 
   if (!loaded) return null;
   if (!user) {
@@ -107,10 +130,12 @@ export default function App() {
           {user.role && <span className="role">{user.role.replace("_", " ")}</span>}
           <button className="ghost theme-btn" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             title={theme === "dark" ? "Light theme" : "Dark theme"}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
-          <button className="ghost" onClick={() => { setToken(null); setUser(null); location.hash = "#/login"; }}><Icon name="logout" />Log out</button>
+          <HelpMenu showAtLogin={user.show_tour !== false} onTour={() => setTourOpen(true)} onToggleLogin={saveTourPref} />
+          <button className="ghost" onClick={() => { setTourOpen(false); setToken(null); setUser(null); location.hash = "#/login"; }}><Icon name="logout" />Log out</button>
         </div>
       </header>
       <main id="main" ref={mainRef} tabIndex={-1}>{body}</main>
+      {tourOpen && <Tour user={user} isAdmin={isAdmin} isGso={isGso} onClose={closeTour} />}
     </div>
   );
 }

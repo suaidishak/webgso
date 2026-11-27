@@ -40,6 +40,8 @@ class AppUser(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime)
     approved_by: Mapped[int | None] = mapped_column(Integer)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Guided tour opens at each login until the user ticks "Don't show this again".
+    show_tour: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
     organisation: Mapped[Organisation | None] = relationship(lazy="joined")
 

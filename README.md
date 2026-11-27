@@ -29,7 +29,9 @@ SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
 ```
 
 The mock makes SIDS serve a short day-ahead forecast (`MOCK_FAULTS=sids:dayahead`) so there's an
-alert to look at.
+alert to look at. It also makes BKHS require the API key `demo-key-1234` (`MOCK_REQUIRE_KEY`): until you
+set that key under Plants, its tests fail with HTTP 401. The mock answers for any mnemonic, so you
+can try adding new plants against it.
 
 **Without Docker:** Postgres 16, Python 3.12+, Node 20+.
 
@@ -54,7 +56,9 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173
 | Deadlines | `compliance_deadline`, `deadline_check` | Stored separately from pull times. Each one is marked met, late or missed after its grace period. |
 | Alerts | `alert_log` | Raised from major flags, failed calls and missed deadlines. Cleared automatically when a later poll is clean. This is an audit log only, so nothing is sent out. |
 | Auth | `backend/app/auth.py`, `routers/auth.py` | Self-registration, then admin approval. Passwords use Argon2, sessions use JWT, and an account locks for 15 minutes after 5 failed logins. Roles: `gso_admin`, `gso_user`, `lss_user` (limited to assigned plants; enforced on every API query). |
-| Admin | `routers/admin.py` | Approve users and assign roles and plants, edit plants and endpoint URLs, "Poll now", edit schedules and deadlines. Every change goes to `audit_event`. |
+| Plant registry | `routers/admin.py`, `frontend/src/pages/PlantsAdmin.tsx` | Admins add, view, edit and delete plants under **Plants**. Each plant has its own URL per endpoint (with a "fill from base URL" helper) and an optional API key, sent as a header (default `X-API-Key`) or a query parameter (default `apiKey`). Keys are encrypted at rest with `PLANT_KEY_SECRET` (Fernet), never returned by the API, shown only as their last 4 characters, and kept out of logs. The poller reads the registry on every tick, and a newly live plant gets its first poll within 30 s. Deleting a plant asks you to type its mnemonic and also removes its history. Set the status to *suspended* to stop polling but keep the history. |
+| Endpoint tests | `POST /api/v1/admin/plants/{mnem}/test[?category=]` | The **Test** button on each endpoint and **Test all** on each plant (or for all plants) call the endpoints now with the stored key. Each result shows **Pass** (HTTP 200 and rev5-compliant), **Pass with warnings** (minor deviations only) or **Fail** (unreachable, error status, or a major rule broken), with the HTTP status, response time, size and the main reason. Test calls are stored like any other poll. |
+| Admin | `routers/admin.py` | Approve users and assign roles and plants, edit schedules and deadlines. Every change goes to `audit_event`. |
 | Dashboard | `frontend/` | React + Vite. Pages: fleet board, plant drill-down (forecast chart, MMF table, flags, raw JSON, recent polls), alert log, compliance (24 h rule summary and deadlines), and admin pages for users, schedules and the audit log. |
 
 ### Validation rules (decided 27 Nov 2026)
@@ -90,5 +94,5 @@ Deadlines: day-ahead daily by 10:00 · week-ahead Wednesday by 12:30 · four-mon
 Email verification and password reset (needs SES) · S3 raw archive and monthly partitions ·
 SQS between scheduler and workers · actual generation and accuracy KPIs (no plant exposes actuals
 yet) · fleet-total forecasts and exports · duplicate-content check across plants (KMLS = KALS,
-SIDS = SKNS) · plant API keys from Secrets Manager (the pilot host needs none) · AWS deployment
+SIDS = SKNS) · plant API keys in AWS Secrets Manager instead of encrypted in the database · AWS deployment
 (Terraform or CDK).

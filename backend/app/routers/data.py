@@ -16,9 +16,13 @@ from ..models import (
 router = APIRouter(tags=["data"])
 
 
-def plant_out(p: Plant) -> dict:
+def plant_out(p: Plant, admin: bool = False) -> dict:
+    """The API key itself is never returned; admins see whether one is set and its last 4 characters."""
+    auth = {"auth_method": p.auth_method, "auth_param_name": p.auth_param_name,
+            "has_api_key": bool(p.api_key_enc), "api_key_hint": p.api_key_hint,
+            "created_at": p.created_at, "updated_at": p.updated_at} if admin else {}
     return {"id": p.id, "mnemonic": p.mnemonic, "name": p.name, "capacity_mw": p.capacity_mw,
-            "mmf_station_count": p.mmf_station_count, "status": p.status, "notes": p.notes,
+            "mmf_station_count": p.mmf_station_count, "status": p.status, "notes": p.notes, **auth,
             "endpoints": [{"category": e.category, "url": e.url, "enabled": e.enabled, "note": e.note}
                           for e in sorted(p.endpoints, key=lambda e: CATEGORIES.index(e.category)
                                           if e.category in CATEGORIES else 99)]}
@@ -28,12 +32,12 @@ def plant_out(p: Plant) -> dict:
 async def list_plants(user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
     ids = await visible_plant_ids(user, s)
     plants = (await s.execute(select(Plant).where(Plant.id.in_(ids)).order_by(Plant.mnemonic))).scalars().all()
-    return [plant_out(p) for p in plants]
+    return [plant_out(p, user.role == "gso_admin") for p in plants]
 
 
 @router.get("/plants/{mnem}")
 async def get_plant(mnem: str, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
-    return plant_out(await plant_for_user(mnem, user, s))
+    return plant_out(await plant_for_user(mnem, user, s), user.role == "gso_admin")
 
 
 @router.get("/fleet/status")

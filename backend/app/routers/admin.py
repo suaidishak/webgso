@@ -5,16 +5,18 @@ from datetime import date, time
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_admin
 from ..config import now_local
 from ..db import get_session
 from ..models import (
-    CATEGORIES, ROLES, AppUser, AuditEvent, ComplianceDeadline, Plant, PlantEndpoint, PollSchedule,
+    CATEGORIES, ROLES, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
+    PollSchedule,
     ScheduleRun, UserPlantAccess,
 )
+from ..plant_keys import encrypt, hint as key_hint
 from ..poller import poll_endpoint
 from ..scheduler import next_runs
 from .auth import user_out
@@ -32,7 +34,11 @@ async def audit(s: AsyncSession, user: AppUser, action: str, entity: str, entity
 def _jsonable(d):
     if d is None:
         return None
-    return {k: (v.isoformat() if isinstance(v, (date, time)) else v) for k, v in d.items()}
+    if isinstance(d, dict):
+        return {k: _jsonable(v) for k, v in d.items()}
+    if isinstance(d, list):
+        return [_jsonable(v) for v in d]
+    return d.isoformat() if isinstance(d, (date, time)) else d
 
 
 # ---------------------------------------------------------------- users
@@ -85,33 +91,66 @@ async def set_user(user_id: int, body: ApproveIn, admin: AppUser = Depends(requi
 # ---------------------------------------------------------------- plants
 class EndpointIn(BaseModel):
     category: str
-    url: str = Field(pattern=r"^https?://")
+    url: str = Field(pattern=r"^https?://\S+$", max_length=500)
     enabled: bool = True
     note: str | None = None
 
 
 class PlantIn(BaseModel):
     mnemonic: str = Field(min_length=2, max_length=8, pattern="^[A-Za-z0-9]+$")
-    name: str
-    capacity_mw: float | None = None
-    mmf_station_count: int | None = None
+    name: str = Field(min_length=1, max_length=200)
+    capacity_mw: float | None = Field(None, gt=0)
+    mmf_station_count: int | None = Field(None, ge=0, le=50)
     status: str = Field("live", pattern="^(onboarding|live|suspended)$")
     notes: str | None = None
     endpoints: list[EndpointIn] = []
+    auth_method: str = Field("none", pattern="^(none|header|query)$")
+    auth_param_name: str | None = Field(None, max_length=100, pattern=r"^[A-Za-z0-9_\-]+$")
+    # Write-only. Omitted or null keeps the stored key; "" removes it; any other value replaces it.
+    api_key: str | None = Field(None, max_length=500)
+
+    @model_validator(mode="after")
+    def check(self):
+        cats = [e.category for e in self.endpoints]
+        if len(cats) != len(set(cats)):
+            raise ValueError("Each endpoint type can appear only once")
+        for c in cats:
+            if c not in CATEGORIES:
+                raise ValueError(f"Unknown endpoint type {c}")
+        return self
+
+    def audit_view(self) -> dict:
+        d = self.model_dump(exclude={"api_key"})
+        d["api_key"] = "unchanged" if self.api_key is None else "removed" if self.api_key == "" else "replaced"
+        return d
+
+
+def _apply(p: Plant, body: PlantIn):
+    p.name, p.capacity_mw, p.mmf_station_count = body.name.strip(), body.capacity_mw, body.mmf_station_count
+    p.status, p.notes = body.status, body.notes
+    p.auth_method = body.auth_method
+    p.auth_param_name = (body.auth_param_name or ("X-API-Key" if body.auth_method == "header" else "apiKey")
+                         ) if body.auth_method != "none" else None
+    if body.api_key is not None:
+        key = body.api_key.strip()
+        p.api_key_enc, p.api_key_hint = (encrypt(key), key_hint(key)) if key else (None, None)
+    if p.auth_method != "none" and not p.api_key_enc:
+        raise HTTPException(400, "Enter the API key, or set authentication to None")
+    p.updated_at = now_local()
+    _set_endpoints(p, body.endpoints)
 
 
 @router.post("/plants", status_code=201)
 async def create_plant(body: PlantIn, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
     if (await s.execute(select(Plant).where(Plant.mnemonic == body.mnemonic.lower()))).first():
-        raise HTTPException(409, "Mnemonic already exists")
-    p = Plant(mnemonic=body.mnemonic.lower(), name=body.name, capacity_mw=body.capacity_mw,
-              mmf_station_count=body.mmf_station_count, status=body.status, notes=body.notes)
-    _set_endpoints(p, body.endpoints)
+        raise HTTPException(409, f"A plant with mnemonic {body.mnemonic.upper()} already exists")
+    p = Plant(mnemonic=body.mnemonic.lower(), created_at=now_local())
+    _apply(p, body)
     s.add(p)
     await s.flush()
-    await audit(s, admin, "plant.create", "plant", p.mnemonic, None, body.model_dump())
+    await audit(s, admin, "plant.create", "plant", p.mnemonic, None, body.audit_view())
     await s.commit()
-    return plant_out(p)
+    return plant_out(p, admin=True)
 
 
 @router.put("/plants/{mnem}")
@@ -120,25 +159,62 @@ async def update_plant(mnem: str, body: PlantIn, admin: AppUser = Depends(requir
     p = (await s.execute(select(Plant).where(Plant.mnemonic == mnem.lower()))).scalar_one_or_none()
     if p is None:
         raise HTTPException(404, "Plant not found")
-    before = plant_out(p)
-    p.name, p.capacity_mw, p.mmf_station_count = body.name, body.capacity_mw, body.mmf_station_count
-    p.status, p.notes = body.status, body.notes
-    _set_endpoints(p, body.endpoints)
-    await audit(s, admin, "plant.update", "plant", p.mnemonic, before, body.model_dump())
+    if body.mnemonic.lower() != p.mnemonic:
+        raise HTTPException(400, "The mnemonic cannot be changed; add a new plant instead")
+    before = plant_out(p, admin=True)
+    _apply(p, body)
+    await audit(s, admin, "plant.update", "plant", p.mnemonic, _jsonable(before), body.audit_view())
     await s.commit()
-    return plant_out(p)
+    return plant_out(p, admin=True)
+
+
+@router.delete("/plants/{mnem}")
+async def delete_plant(mnem: str, confirm: str = "", admin: AppUser = Depends(require_admin),
+                       s: AsyncSession = Depends(get_session)):
+    """Deletes the plant and ALL its stored data (polls, raw responses, forecasts, flags, alerts).
+    The caller must repeat the mnemonic in `confirm`. To stop polling but keep history, set status suspended."""
+    p = (await s.execute(select(Plant).where(Plant.mnemonic == mnem.lower()))).scalar_one_or_none()
+    if p is None:
+        raise HTTPException(404, "Plant not found")
+    if confirm.lower() != p.mnemonic:
+        raise HTTPException(400, "Type the plant's mnemonic to confirm deletion")
+    counts = (await s.execute(text("""
+        SELECT (SELECT count(*) FROM poll_attempt WHERE plant_id = :id) AS polls,
+               (SELECT count(*) FROM forecast_snapshot WHERE plant_id = :id) AS snapshots,
+               (SELECT count(*) FROM alert_log WHERE plant_id = :id) AS alerts"""), {"id": p.id})).mappings().one()
+    await audit(s, admin, "plant.delete", "plant", p.mnemonic, _jsonable(plant_out(p, admin=True)), dict(counts))
+    await s.delete(p)
+    await s.commit()
+    return {"ok": True, "deleted": dict(counts)}
+
+
+@router.get("/plants/{mnem}/usage")
+async def plant_usage(mnem: str, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    """How much stored history a delete would remove."""
+    p = (await s.execute(select(Plant).where(Plant.mnemonic == mnem.lower()))).scalar_one_or_none()
+    if p is None:
+        raise HTTPException(404, "Plant not found")
+    return dict((await s.execute(text("""
+        SELECT (SELECT count(*) FROM poll_attempt WHERE plant_id = :id) AS polls,
+               (SELECT count(*) FROM forecast_snapshot WHERE plant_id = :id) AS snapshots,
+               (SELECT count(*) FROM alert_log WHERE plant_id = :id) AS alerts,
+               (SELECT count(*) FROM user_plant_access WHERE plant_id = :id) AS users"""), {"id": p.id})).mappings().one())
 
 
 def _set_endpoints(p: Plant, eps: list[EndpointIn]):
+    """Replace the plant's endpoints with the given list (an endpoint left out is removed)."""
     existing = {e.category: e for e in p.endpoints}
+    wanted = {e.category for e in eps}
+    for cat, x in existing.items():
+        if cat not in wanted:
+            p.endpoints.remove(x)
     for e in eps:
-        if e.category not in CATEGORIES:
-            raise HTTPException(400, f"Unknown category {e.category}")
+        url = e.url.strip()
         if e.category in existing:
             x = existing[e.category]
-            x.url, x.enabled, x.note = e.url, e.enabled, e.note
+            x.url, x.enabled, x.note = url, e.enabled, e.note
         else:
-            p.endpoints.append(PlantEndpoint(category=e.category, url=e.url, enabled=e.enabled, note=e.note))
+            p.endpoints.append(PlantEndpoint(category=e.category, url=url, enabled=e.enabled, note=e.note))
 
 
 @router.post("/plants/{mnem}/poll")
@@ -159,6 +235,56 @@ async def poll_now(mnem: str, category: str | None = None, admin: AppUser = Depe
     await audit(s, admin, "plant.poll_now", "plant", p.mnemonic, None, {"categories": cats})
     await s.commit()
     return {"attempts": dict(zip(cats, ids))}
+
+
+@router.post("/plants/{mnem}/test")
+async def test_plant(mnem: str, category: str | None = None, admin: AppUser = Depends(require_admin),
+                     s: AsyncSession = Depends(get_session)):
+    """GET one endpoint (or every endpoint with a URL, polled or not) with the stored key and report
+    pass/fail. Each call is a normal poll, so the result is kept in the history as evidence."""
+    p = (await s.execute(select(Plant).where(Plant.mnemonic == mnem.lower()))).scalar_one_or_none()
+    if p is None:
+        raise HTTPException(404, "Plant not found")
+    eps = [e for e in p.endpoints if category is None or e.category == category]
+    if not eps:
+        raise HTTPException(400, "No matching endpoint")
+    now = now_local()
+    ids = await asyncio.gather(*(poll_endpoint(p.id, e.category, scheduled_for=None, timeout_s=90, retries=0)
+                                 for e in eps))
+    results = []
+    for e, aid in zip(eps, ids):
+        s.add(ScheduleRun(schedule_id=None, plant_id=p.id, category=e.category, due_at=now, enqueued_at=now,
+                          status="manual", poll_attempt_id=aid))
+        a = await s.get(PollAttempt, aid) if aid else None
+        flags = (await s.execute(select(ComplianceFlag).where(ComplianceFlag.poll_attempt_id == aid))
+                 ).scalars().all() if aid else []
+        majors = [f for f in flags if f.severity == "major"]
+        minors = [f for f in flags if f.severity == "minor"]
+        if a is None:
+            verdict, reason = "fail", "Test could not run"
+        elif a.http_status is None:
+            verdict, reason = "fail", a.error or "No response"
+        elif a.http_status != 200:
+            verdict, reason = "fail", (majors[0].message if majors else f"HTTP {a.http_status}")
+        elif majors:
+            verdict, reason = "fail", majors[0].message
+        elif minors:
+            verdict, reason = "warn", minors[0].message
+        else:
+            verdict, reason = "pass", "Reachable and compliant with rev5"
+        results.append({
+            "category": e.category, "url": e.url, "polled": e.enabled, "verdict": verdict, "reason": reason,
+            "http_status": a.http_status if a else None, "latency_ms": a.latency_ms if a else None,
+            "bytes": a.bytes if a else None, "attempt_id": aid, "tested_at": a.started_at if a else now,
+            "major": [f.message for f in majors], "minor": [f.message for f in minors],
+        })
+    await audit(s, admin, "plant.test", "plant", p.mnemonic, None,
+                {r["category"]: r["verdict"] for r in results})
+    await s.commit()
+    order = {c: i for i, c in enumerate(CATEGORIES)}
+    results.sort(key=lambda r: order.get(r["category"], 99))
+    return {"plant": p.mnemonic, "tested_at": now, "results": results,
+            "summary": {v: sum(r["verdict"] == v for r in results) for v in ("pass", "warn", "fail")}}
 
 
 # ---------------------------------------------------------------- schedules

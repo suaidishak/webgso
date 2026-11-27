@@ -6,6 +6,7 @@ import PlantPage from "./pages/Plant";
 import Alerts from "./pages/Alerts";
 import Compliance from "./pages/Compliance";
 import { AdminUsers, AdminSchedules, AdminAudit } from "./pages/Admin";
+import { PlantsList, PlantForm } from "./pages/PlantsAdmin";
 
 function useHash() {
   const [hash, setHash] = useState(location.hash || "#/");
@@ -35,12 +36,15 @@ export default function App() {
   }
   const isAdmin = user.role === "gso_admin";
   const isGso = isAdmin || user.role === "gso_user";
-  const [, page, arg] = route.split("/");
+  const [, page, arg, sub] = route.split("/");
 
   let body;
   if (page === "plant" && arg) body = <PlantPage mnem={arg} user={user} />;
   else if (page === "alerts") body = <Alerts canAck={isGso} />;
   else if (page === "compliance") body = <Compliance />;
+  else if (page === "admin" && isAdmin && arg === "plants" && sub === "new") body = <PlantForm key="new" />;
+  else if (page === "admin" && isAdmin && arg === "plants" && sub) body = <PlantForm key={sub} mnem={sub} />;
+  else if (page === "admin" && isAdmin && arg === "plants") body = <PlantsList />;
   else if (page === "admin" && isAdmin && arg === "users") body = <AdminUsers />;
   else if (page === "admin" && isAdmin && arg === "schedules") body = <AdminSchedules />;
   else if (page === "admin" && isAdmin && arg === "audit") body = <AdminAudit />;
@@ -57,6 +61,7 @@ export default function App() {
           {link("#/", "Fleet")}
           {link("#/alerts", "Alerts")}
           {link("#/compliance", "Compliance")}
+          {isAdmin && link("#/admin/plants", "Plants")}
           {isAdmin && link("#/admin/users", "Users")}
           {isAdmin && link("#/admin/schedules", "Schedules")}
           {isAdmin && link("#/admin/audit", "Audit")}

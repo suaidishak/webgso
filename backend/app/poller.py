@@ -18,6 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import validation as v
+from .plant_keys import auth_parts, decrypt, scrub
 from .config import get_settings, now_local
 from .db import SessionLocal
 from .models import (
@@ -34,8 +35,10 @@ _host_locks: dict[str, asyncio.Semaphore] = defaultdict(lambda: asyncio.Semaphor
 POLL_ALERT_RULES_PREFIX = ("HTTP_", "FETCH_")
 
 
-async def fetch(url: str, timeout_s: int, retries: int, backoff_s: int) -> dict:
-    """GET with retries. Returns a dict describing the final try."""
+async def fetch(url: str, timeout_s: int, retries: int, backoff_s: int,
+                auth_headers: dict | None = None, auth_params: dict | None = None) -> dict:
+    """GET with retries. Returns a dict describing the final try. Auth values never reach the result."""
+    secret = next(iter({**(auth_headers or {}), **(auth_params or {})}.values()), None)
     host = urlparse(url).netloc
     last: dict = {}
     for attempt in range(1, retries + 2):
@@ -45,8 +48,9 @@ async def fetch(url: str, timeout_s: int, retries: int, backoff_s: int) -> dict:
                 async with httpx.AsyncClient(timeout=timeout_s, verify=get_settings().verify_tls,
                                              headers={"Accept": "application/json",
                                                       "Accept-Encoding": "gzip",
-                                                      "User-Agent": "GSO-Solar-Platform/0.1"}) as client:
-                    resp = await client.get(url)
+                                                      "User-Agent": "GSO-Solar-Platform/0.1",
+                                                      **(auth_headers or {})}) as client:
+                    resp = await client.get(url, params=auth_params or None)
             last = {"status": resp.status_code, "content": resp.content,
                     "latency_ms": int((_time.monotonic() - t0) * 1000), "error": None, "tries": attempt}
             if resp.status_code < 500:
@@ -54,7 +58,7 @@ async def fetch(url: str, timeout_s: int, retries: int, backoff_s: int) -> dict:
             last["error"] = f"HTTP {resp.status_code}"
         except httpx.HTTPError as e:
             last = {"status": None, "content": None, "latency_ms": int((_time.monotonic() - t0) * 1000),
-                    "error": f"{type(e).__name__}: {e}"[:500], "tries": attempt}
+                    "error": scrub(f"{type(e).__name__}: {e}", secret)[:500], "tries": attempt}
         if attempt <= retries:
             await asyncio.sleep(backoff_s * attempt)
     return last
@@ -70,9 +74,10 @@ async def poll_endpoint(plant_id: int, category: str, *, scheduled_for: datetime
         if plant is None or ep is None:
             return None
         url, mnemonic, capacity, stations = ep.url, plant.mnemonic, plant.capacity_mw, plant.mmf_station_count
+        headers, params = auth_parts(plant.auth_method, plant.auth_param_name, decrypt(plant.api_key_enc))
 
     started = now_local()
-    res = await fetch(url, timeout_s, retries, backoff_s)
+    res = await fetch(url, timeout_s, retries, backoff_s, headers, params)
 
     async with SessionLocal() as s:
         attempt = PollAttempt(plant_id=plant_id, category=category, url=url, scheduled_for=scheduled_for,
@@ -86,7 +91,8 @@ async def poll_endpoint(plant_id: int, category: str, *, scheduled_for: datetime
         if res["status"] is None:
             flags.append(v.Flag("HTTP_DOWN", v.MAJOR, f"No response: {res['error']}"))
         elif res["status"] != 200:
-            flags.append(v.Flag("HTTP_STATUS", v.MAJOR, f"HTTP {res['status']}"))
+            hint = " (check the plant's API key)" if res["status"] in (401, 403) else ""
+            flags.append(v.Flag("HTTP_STATUS", v.MAJOR, f"HTTP {res['status']}{hint}"))
 
         if res["content"] is not None and res["status"] == 200:
             flags += await _ingest(s, attempt, plant_id, category, mnemonic, capacity, stations,

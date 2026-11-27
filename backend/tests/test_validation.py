@@ -149,3 +149,16 @@ def test_deadlines():
     m = ComplianceDeadline(period="monthly", day_of_month=25, due_time=time(23, 59))
     assert last_deadline(m, now) == (datetime(2026, 11, 25, 23, 59), datetime(2026, 12, 1))
     assert last_deadline(m, datetime(2026, 11, 20)) == (datetime(2026, 10, 25, 23, 59), datetime(2026, 11, 1))
+
+
+def test_plant_key_encryption_and_auth_parts():
+    from app import plant_keys as k
+    tok = k.encrypt("demo-key-1234")
+    assert "demo-key" not in tok and k.decrypt(tok) == "demo-key-1234"
+    assert k.decrypt("garbage") is None
+    assert k.hint("demo-key-1234") == "1234" and k.hint("short") == ""
+    assert k.auth_parts("header", None, "abc") == ({"X-API-Key": "abc"}, {})
+    assert k.auth_parts("query", "key", "abc") == ({}, {"key": "abc"})
+    assert k.auth_parts("none", None, "abc") == ({}, {})
+    assert k.auth_parts("header", "X-API-Key", None) == ({}, {})
+    assert k.scrub("GET https://x/y?apiKey=abc failed", "abc") == "GET https://x/y?apiKey=*** failed"

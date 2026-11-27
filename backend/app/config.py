@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://gso:gso@localhost:5432/gso"
     jwt_secret: str = "change-me-in-production"
     jwt_ttl_minutes: int = 12 * 60
+    # Encrypts plant API keys at rest. Set it once and keep it: changing it makes stored keys unreadable.
+    # If empty, a key is derived from JWT_SECRET (fine for local use, not for production).
+    plant_key_secret: str = ""
     # Bootstrap admin, created on first start if no gso_admin exists.
     admin_email: str = "admin@gso.local"
     admin_password: str = "admin12345"

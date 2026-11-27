@@ -34,6 +34,17 @@ DEFAULT_DEADLINES = [
 ]
 
 
+# Beta-only schema upgrades for databases created before a column existed (Alembic later).
+UPGRADES = [
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS auth_method VARCHAR(10) NOT NULL DEFAULT 'none'",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS auth_param_name VARCHAR(100)",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS api_key_enc TEXT",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS api_key_hint VARCHAR(8)",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
+]
+
+
 async def init_db():
     # API and worker start together; an advisory lock makes schema creation and seeding run once.
     async with engine.connect() as lock:
@@ -41,6 +52,8 @@ async def init_db():
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                for stmt in UPGRADES:
+                    await conn.execute(text(stmt))
             await seed()
         finally:
             await lock.execute(text("SELECT pg_advisory_unlock(4242)"))
@@ -63,7 +76,7 @@ async def seed():
         if not (await s.execute(select(Plant))).first():
             base = cfg.seed_base_url.rstrip("/")
             for m in PILOT_PLANTS:
-                p = Plant(mnemonic=m, name=m.upper(), status="live")
+                p = Plant(mnemonic=m, name=m.upper(), status="live", auth_method="none", created_at=now_local())
                 for cat, path in FORECAST_PATHS.items():
                     p.endpoints.append(PlantEndpoint(category=cat, url=f"{base}/{m}/{path}"))
                 p.endpoints.append(PlantEndpoint(

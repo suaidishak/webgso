@@ -11,13 +11,22 @@ import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 app = FastAPI(title="Mock LSS plants")
 TZ = ZoneInfo("Asia/Kuala_Lumpur")
 PLANTS = {"kmls": 50, "mals": 30, "kals": 50, "lmms": 49, "bdws": 45, "sids": 50, "skns": 50, "bkhs": 30}
 FAULTS = {tuple(x.split(":")) for x in os.getenv("MOCK_FAULTS", "").split(",") if ":" in x}
 SLOT = timedelta(minutes=15)
+# MOCK_REQUIRE_KEY="bkhs:secret" makes a plant answer 401 unless the key comes as an X-API-Key header
+# or an apiKey query parameter, to try the platform's per-plant API key settings.
+REQUIRED_KEYS = dict(x.split(":", 1) for x in os.getenv("MOCK_REQUIRE_KEY", "").split(",") if ":" in x)
+
+
+def check_key(mnem: str, request: Request):
+    want = REQUIRED_KEYS.get(mnem)
+    if want and want not in (request.headers.get("x-api-key"), request.query_params.get("apiKey")):
+        raise HTTPException(401, "Invalid or missing API key")
 
 
 def now():
@@ -37,7 +46,7 @@ def add_months(d, n):
 
 
 def series(mnem, cat, start, end):
-    cap = PLANTS[mnem]
+    cap = PLANTS.get(mnem, 40)  # any other mnemonic answers too, so new plants can be tried
     pts, t = [], start
     while t < end:
         pts.append({"StartTime": t.isoformat(), "EndTime": (t + SLOT).isoformat(),
@@ -53,9 +62,10 @@ CATEGORY = {"rolling": "ActivePowerProduction", "dayahead": "DayAhead", "weekahe
 
 
 @app.get("/{mnem}/forecast/{cat}")
-def forecast(mnem: str, cat: str):
-    if mnem not in PLANTS or cat not in CATEGORY:
+def forecast(mnem: str, cat: str, request: Request):
+    if not mnem.isalnum() or cat not in CATEGORY:
         raise HTTPException(404)
+    check_key(mnem, request)
     n = now()
     day = n.replace(hour=0, minute=0, second=0)
     if cat == "rolling":
@@ -88,9 +98,10 @@ PARAMS = [("HorIrradiance", "W/m2", 0, 1000), ("IncIrradiance", "W/m2", 0, 1100)
 
 
 @app.get("/{mnem}/mmf/live")
-def mmf(mnem: str):
-    if mnem not in PLANTS:
+def mmf(mnem: str, request: Request):
+    if not mnem.isalnum():
         raise HTTPException(404)
+    check_key(mnem, request)
     n = now().replace(second=0)
     n = n.replace(minute=n.minute - n.minute % 5)
     if mnem in ("kmls", "kals"):  # raw sensor dump, not rev5

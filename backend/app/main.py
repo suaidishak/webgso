@@ -11,6 +11,8 @@ from .routers import admin, auth, data
 from .seed import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+# httpx logs full request URLs at INFO, which would leak plant API keys sent as query parameters.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager

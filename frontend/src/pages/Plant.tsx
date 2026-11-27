@@ -98,6 +98,8 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
       <div className="title-row">
         <h2><a href="#/" className="muted">Fleet</a> / {plant.mnemonic.toUpperCase()}</h2>
         {plant.capacity_mw && <span className="muted">{plant.capacity_mw} MW</span>}
+        {plant.name && plant.name.toLowerCase() !== plant.mnemonic && <span className="muted">{plant.name}</span>}
+        {user.role === "gso_admin" && <a className="button ghost" href={`#/admin/plants/${plant.mnemonic}`}>Edit plant</a>}
       </div>
       <div className="tabs">
         {CATS.map(c => <button key={c} className={c === cat ? "on" : ""} onClick={() => setCat(c)}>{CAT_LABEL[c]}</button>)}

@@ -84,6 +84,14 @@ class Plant(Base):
     mmf_station_count: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="live")  # onboarding | live | suspended
     notes: Mapped[str | None] = mapped_column(Text)
+    # Outbound auth to the plant's web service. The key is encrypted at rest (see secrets.py)
+    # and never returned by the API; only its last 4 characters are shown to admins.
+    auth_method: Mapped[str] = mapped_column(String(10), default="none")  # none | header | query
+    auth_param_name: Mapped[str | None] = mapped_column(String(100))  # e.g. X-API-Key or apiKey
+    api_key_enc: Mapped[str | None] = mapped_column(Text)
+    api_key_hint: Mapped[str | None] = mapped_column(String(8))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     endpoints: Mapped[list["PlantEndpoint"]] = relationship(back_populates="plant", lazy="selectin",
                                                            cascade="all, delete-orphan")

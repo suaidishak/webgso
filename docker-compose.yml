@@ -43,6 +43,7 @@ services:
     build: ./mockplants
     environment:
       MOCK_FAULTS: "sids:dayahead"
+      MOCK_REQUIRE_KEY: "bkhs:demo-key-1234"
     ports: ["9000:9000"]
 
 volumes:

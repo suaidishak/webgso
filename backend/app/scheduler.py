@@ -212,21 +212,36 @@ async def _run(run_id, pid, cat, due, timeout_s, retries, backoff, jitter):
     await mark_run(run_id, attempt_id)
 
 
+_sweeping: set[tuple[int, str]] = set()
+
+
 async def initial_sweep(tasks: set[asyncio.Task]):
-    """Poll every enabled endpoint that has never been polled, so a fresh install fills the board
-    without waiting for the weekly or monthly windows."""
+    """Poll every enabled endpoint of a live plant that has never been polled. Runs at start-up and on
+    every tick, so a fresh install or a newly added plant fills the board without waiting for the
+    weekly or monthly windows."""
     async with SessionLocal() as s:
         rows = (await s.execute(text("""
             SELECT e.plant_id, e.category FROM plant_endpoint e JOIN plant p ON p.id = e.plant_id
             WHERE e.enabled AND p.status = 'live' AND NOT EXISTS (
                 SELECT 1 FROM poll_attempt a WHERE a.plant_id = e.plant_id AND a.category = e.category)
         """))).all()
+    rows = [(pid, cat) for pid, cat in rows if (pid, cat) not in _sweeping]
     if rows:
-        log.info("initial sweep: %d never-polled endpoints", len(rows))
+        log.info("first poll for %d never-polled endpoints", len(rows))
     for pid, cat in rows:
-        t = asyncio.create_task(poll_endpoint(pid, cat, timeout_s=180, retries=1, backoff_s=30))
+        _sweeping.add((pid, cat))
+        t = asyncio.create_task(_first_poll(pid, cat))
         tasks.add(t)
         t.add_done_callback(tasks.discard)
+
+
+async def _first_poll(pid: int, cat: str):
+    try:
+        await poll_endpoint(pid, cat, timeout_s=180, retries=1, backoff_s=30)
+    except Exception:  # noqa: BLE001
+        log.exception("first poll failed %s/%s", pid, cat)
+    finally:
+        _sweeping.discard((pid, cat))
 
 
 async def run_forever():
@@ -240,10 +255,10 @@ async def run_forever():
             log.info("another scheduler holds the lock; waiting")
             await asyncio.sleep(tick_s)
         log.info("scheduler started (tick %ss)", tick_s)
-        await initial_sweep(tasks)
         while True:
             try:
                 await tick(tasks)
+                await initial_sweep(tasks)
             except Exception:  # noqa: BLE001
                 log.exception("scheduler tick failed")
             await asyncio.sleep(tick_s)

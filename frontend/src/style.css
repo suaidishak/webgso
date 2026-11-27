@@ -205,3 +205,22 @@ table.inner tr:last-child td { border-bottom: 0; }
 .ep-switch { width: 50px; }
 .banner { background: rgba(214, 69, 69, .12); border: 1px solid var(--invalid); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
 .banner.soft { background: rgba(201, 162, 39, .12); border-color: var(--minor); }
+
+/* ad-hoc poll */
+.poll-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 10px 0 14px; padding: 14px 18px; }
+.poll-form .field { margin: 0; min-width: 220px; }
+.poll-summary { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; margin: 6px 0 10px; font-size: 14px; }
+.poll-results td { vertical-align: top; }
+.poll-results tr.sel > td { background: var(--hover, rgba(127,127,127,.06)); }
+.inspect-row > td { padding: 12px 8px 18px; }
+.inspect.embedded .json { height: 460px; min-height: 0; }
+.alert-cell { min-width: 240px; }
+.alert-chip { font-size: 12px; padding: 3px 8px; border-radius: 6px; margin-bottom: 4px; border-left: 3px solid; background: var(--bg, transparent); }
+.alert-chip b { margin-right: 4px; } .alert-chip span { display: block; color: var(--muted); }
+.alert-chip.new { border-color: var(--invalid); } .alert-chip.new b { color: var(--invalid); }
+.alert-chip.open { border-color: var(--minor); }
+.alert-chip.cleared { border-color: var(--ok); } .alert-chip.cleared b { color: var(--ok); }
+.txt-red { color: var(--invalid); } .txt-green { color: var(--ok); }
+.push-right { margin-left: auto; }
+.poll-link { margin-left: auto; font-size: 13px; }
+.poll-plant { display: block; font-size: 11.5px; margin-top: 2px; }

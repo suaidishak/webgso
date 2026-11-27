@@ -53,7 +53,7 @@ function flatten(value: unknown): Line[] {
   return out;
 }
 
-export default function Inspect({ id }: { id: string }) {
+export default function Inspect({ id, embedded = false, canPoll = false }: { id: string; embedded?: boolean; canPoll?: boolean }) {
   const [d, setD] = useState<any>(null);
   const [err, setErr] = useState("");
   const [active, setActive] = useState<number | null>(null);
@@ -135,10 +135,11 @@ export default function Inspect({ id }: { id: string }) {
 
   return (
     <>
-      <div className="title-row">
+      {!embedded && <div className="title-row">
         <h2><a href="#/" className="muted">Fleet</a> / <a href={`#/plant/${d.plant.mnemonic}`} className="muted">{d.plant.mnemonic.toUpperCase()}</a> / {CAT_LABEL[a.category]} response</h2>
         <span className="cell-state"><i className={`dot ${status}`} />{STATUS[status]}</span>
-      </div>
+        {canPoll && <a className="button ghost poll-link" href={`#/admin/poll/${d.plant.mnemonic}/${a.category}/run`}>Poll this API now</a>}
+      </div>}
       <div className="facts">
         <div><span>Polled</span>{fmt(a.started_at)}{a.scheduled_for ? "" : " (manual)"}</div>
         <div><span>HTTP</span>{a.http_status ?? "no response"} · {a.latency_ms} ms</div>
@@ -151,7 +152,7 @@ export default function Inspect({ id }: { id: string }) {
         <p className="muted small">The plant sent exactly the same content as in an earlier poll (first received {fmt(d.raw.received_at)}), so that stored copy is shown.</p>
       )}
 
-      <div className="inspect">
+      <div className={`inspect${embedded ? " embedded" : ""}`}>
         <div className="json-pane">
           {!d.raw ? (
             <div className="card"><b>No response body stored.</b><p className="muted">{a.error || `HTTP ${a.http_status}`}</p></div>

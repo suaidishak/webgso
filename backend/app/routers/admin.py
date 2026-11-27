@@ -12,7 +12,7 @@ from ..auth import require_admin
 from ..config import now_local
 from ..db import get_session
 from ..models import (
-    CATEGORIES, ROLES, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
+    CATEGORIES, ROLES, AlertLog, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
     PollSchedule, PollSwitch,
     ScheduleRun, UserPlantAccess,
 )
@@ -314,23 +314,53 @@ async def set_endpoint_polling(mnem: str, category: str, body: SwitchIn, admin: 
     return plant_out(p, admin=True, sw=await load_switches(s))
 
 
-@router.post("/plants/{mnem}/test")
-async def test_plant(mnem: str, category: str | None = None, admin: AppUser = Depends(require_admin),
-                     s: AsyncSession = Depends(get_session)):
-    """GET one endpoint (or every endpoint with a URL, polled or not) with the stored key and report
-    pass/fail. Each call is a normal poll, so the result is kept in the history as evidence."""
-    p = (await s.execute(select(Plant).where(Plant.mnemonic == mnem.lower()))).scalar_one_or_none()
-    if p is None:
-        raise HTTPException(404, "Plant not found")
-    eps = [e for e in p.endpoints if category is None or e.category == category]
+async def _open_alerts(s: AsyncSession, pairs: set[tuple[int, str]]) -> dict[int, AlertLog]:
+    if not pairs:
+        return {}
+    rows = (await s.execute(select(AlertLog).where(
+        AlertLog.cleared_at.is_(None), ~AlertLog.rule.like("DEADLINE_%"),
+        AlertLog.plant_id.in_({p for p, _ in pairs})).execution_options(populate_existing=True))).scalars().all()
+    return {a.id: a for a in rows if (a.plant_id, a.category) in pairs}
+
+
+def _alert_out(a: AlertLog) -> dict:
+    return {"id": a.id, "rule": a.rule, "severity": a.severity, "message": a.message,
+            "raised_at": a.raised_at, "occurrences": a.occurrences}
+
+
+def _verdict(a: PollAttempt | None, majors: list, minors: list) -> tuple[str, str]:
+    if a is None:
+        return "fail", "The call could not run"
+    if a.http_status is None:
+        return "fail", a.error or "No response"
+    if a.http_status != 200:
+        return "fail", (majors[0].message if majors else f"HTTP {a.http_status}")
+    if majors:
+        return "fail", majors[0].message
+    if minors:
+        return "warn", minors[0].message
+    return "pass", "Reachable and compliant with rev5"
+
+
+async def _run_now(s: AsyncSession, targets: list[tuple[Plant, PlantEndpoint]]) -> list[dict]:
+    """Poll each (plant, endpoint) now, ignoring the polling switches. Each call is an ordinary poll:
+    stored, validated and able to raise or clear alerts. Returns one result per call, with the alerts
+    it raised, the ones still open and the ones it cleared."""
     sw = await load_switches(s)
-    if not eps:
-        raise HTTPException(400, "No matching endpoint")
+    pairs = {(p.id, e.category) for p, e in targets}
+    before = await _open_alerts(s, pairs)
     now = now_local()
     ids = await asyncio.gather(*(poll_endpoint(p.id, e.category, scheduled_for=None, timeout_s=90, retries=0)
-                                 for e in eps))
+                                 for p, e in targets))
+    after = await _open_alerts(s, pairs)
+    cleared = {}
+    if before:
+        gone = [i for i in before if i not in after]
+        if gone:
+            cleared = {a.id: a for a in (await s.execute(select(AlertLog).where(AlertLog.id.in_(gone))
+                                                          .execution_options(populate_existing=True))).scalars()}
     results = []
-    for e, aid in zip(eps, ids):
+    for (p, e), aid in zip(targets, ids):
         s.add(ScheduleRun(schedule_id=None, plant_id=p.id, category=e.category, due_at=now, enqueued_at=now,
                           status="manual", poll_attempt_id=aid))
         a = await s.get(PollAttempt, aid) if aid else None
@@ -338,31 +368,84 @@ async def test_plant(mnem: str, category: str | None = None, admin: AppUser = De
                  ).scalars().all() if aid else []
         majors = [f for f in flags if f.severity == "major"]
         minors = [f for f in flags if f.severity == "minor"]
-        if a is None:
-            verdict, reason = "fail", "Test could not run"
-        elif a.http_status is None:
-            verdict, reason = "fail", a.error or "No response"
-        elif a.http_status != 200:
-            verdict, reason = "fail", (majors[0].message if majors else f"HTTP {a.http_status}")
-        elif majors:
-            verdict, reason = "fail", majors[0].message
-        elif minors:
-            verdict, reason = "warn", minors[0].message
-        else:
-            verdict, reason = "pass", "Reachable and compliant with rev5"
+        verdict, reason = _verdict(a, majors, minors)
+        mine = lambda d: [_alert_out(x) for x in d.values() if x.plant_id == p.id and x.category == e.category]
         results.append({
-            "category": e.category, "url": e.url, "polled": off_reason(sw, p, e) is None, "verdict": verdict, "reason": reason,
+            "plant": p.mnemonic, "category": e.category, "url": e.url, "polled": off_reason(sw, p, e) is None,
+            "off_reason": off_reason(sw, p, e), "verdict": verdict, "reason": reason,
             "http_status": a.http_status if a else None, "latency_ms": a.latency_ms if a else None,
             "bytes": a.bytes if a else None, "attempt_id": aid, "tested_at": a.started_at if a else now,
             "major": [f.message for f in majors], "minor": [f.message for f in minors],
+            "alerts": {
+                "raised": [x for x in mine(after) if x["id"] not in before],
+                "ongoing": [x for x in mine(after) if x["id"] in before],
+                "cleared": mine(cleared),
+            },
         })
+    order = {c: i for i, c in enumerate(CATEGORIES)}
+    results.sort(key=lambda r: (r["plant"], order.get(r["category"], 99)))
+    return results
+
+
+def _summary(results: list[dict]) -> dict:
+    out = {v: sum(r["verdict"] == v for r in results) for v in ("pass", "warn", "fail")}
+    for k in ("raised", "ongoing", "cleared"):
+        out[f"alerts_{k}"] = sum(len(r["alerts"][k]) for r in results)
+    return out
+
+
+@router.post("/plants/{mnem}/test")
+async def test_plant(mnem: str, category: str | None = None, admin: AppUser = Depends(require_admin),
+                     s: AsyncSession = Depends(get_session)):
+    """GET one endpoint (or every endpoint with a URL, polled or not) with the stored key and report
+    pass/fail. Each call is a normal poll, so the result is kept in the history as evidence."""
+    p = await _plant(s, mnem)
+    eps = [e for e in p.endpoints if category is None or e.category == category]
+    if not eps:
+        raise HTTPException(400, "No matching endpoint")
+    results = await _run_now(s, [(p, e) for e in eps])
     await audit(s, admin, "plant.test", "plant", p.mnemonic, None,
                 {r["category"]: r["verdict"] for r in results})
     await s.commit()
-    order = {c: i for i, c in enumerate(CATEGORIES)}
-    results.sort(key=lambda r: order.get(r["category"], 99))
-    return {"plant": p.mnemonic, "tested_at": now, "results": results,
-            "summary": {v: sum(r["verdict"] == v for r in results) for v in ("pass", "warn", "fail")}}
+    return {"plant": p.mnemonic, "tested_at": now_local(), "results": results, "summary": _summary(results)}
+
+
+class PollNowIn(BaseModel):
+    plants: list[str] | None = None  # None = every plant
+    category: str | None = None      # None = every endpoint
+
+    @model_validator(mode="after")
+    def check(self):
+        if self.category is not None and self.category not in CATEGORIES:
+            raise ValueError(f"Unknown category {self.category}")
+        return self
+
+
+@router.post("/poll-now")
+async def poll_now_scope(body: PollNowIn, admin: AppUser = Depends(require_admin),
+                         s: AsyncSession = Depends(get_session)):
+    """Ad-hoc poll of the whole fleet, some plants, one endpoint type, or one endpoint of one plant.
+    Runs even while polling is paused, stores and validates like a scheduled poll, and reports the
+    alerts each call raised, kept open or cleared."""
+    q = select(Plant).order_by(Plant.mnemonic)
+    if body.plants:
+        q = q.where(Plant.mnemonic.in_([m.lower() for m in body.plants]))
+    plants = (await s.execute(q)).scalars().all()
+    if body.plants and len(plants) != len(set(m.lower() for m in body.plants)):
+        raise HTTPException(404, "Plant not found")
+    targets = [(p, e) for p in plants for e in p.endpoints
+               if e.url and (body.category is None or e.category == body.category)]
+    if not targets:
+        raise HTTPException(400, "No matching endpoint")
+    if len(targets) > 200:
+        raise HTTPException(400, "Too many endpoints for one ad-hoc poll")
+    results = await _run_now(s, targets)
+    summary = _summary(results)
+    await audit(s, admin, "poll.manual", "poll",
+                "fleet" if not body.plants else plants[0].mnemonic if len(plants) == 1 else f"{len(plants)} plants",
+                None, {"plants": body.plants or "all", "category": body.category or "all", **summary})
+    await s.commit()
+    return {"polled_at": now_local(), "results": results, "summary": summary}
 
 
 # ---------------------------------------------------------------- schedules

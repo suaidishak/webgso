@@ -13,7 +13,7 @@ export function Legend() {
   return <div className="legend">{Object.entries(STATE_LABEL).map(([k, v]) => <span key={k}><i className={`dot ${k}`} />{v}</span>)}</div>;
 }
 
-export default function Fleet() {
+export default function Fleet({ isAdmin = false }: { isAdmin?: boolean }) {
   const [data, setData] = useState<{ generated_at: string; plants: Row[]; polling?: { fleet: boolean; types: Record<string, boolean> } } | null>(null);
   const [err, setErr] = useState("");
   useEffect(() => {
@@ -32,6 +32,7 @@ export default function Fleet() {
       <div className="title-row">
         <h2>Fleet compliance</h2>
         <span className="muted small">Updated {fmt(data.generated_at)} MYT · refreshes every 30 s</span>
+        {isAdmin && <a className="button ghost push-right" href="#/admin/poll/all/all/run">Poll whole fleet now</a>}
       </div>
       <div className="tiles">
         <div className="tile"><b>{data.plants.length}</b><span>plants</span></div>
@@ -52,7 +53,8 @@ export default function Fleet() {
           <tbody>
             {data.plants.map(p => (
               <tr key={p.mnemonic}>
-                <td><a href={`#/plant/${p.mnemonic}`}><b>{p.mnemonic.toUpperCase()}</b></a></td>
+                <td><a href={`#/plant/${p.mnemonic}`}><b>{p.mnemonic.toUpperCase()}</b></a>
+                  {isAdmin && <a className="poll-plant small" href={`#/admin/poll/${p.mnemonic}/all/run`} title={`Poll every ${p.mnemonic.toUpperCase()} API now and show the raw JSON`}>Poll now</a>}</td>
                 {CATS.map(c => {
                   const cell = p.cells[c];
                   if (!cell) return <td key={c} className="muted">—</td>;

@@ -95,7 +95,10 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
         <h2 className="crumbs"><a href="#/">Fleet</a><span className="sep" aria-hidden="true">/</span>{plant.mnemonic.toUpperCase()}</h2>
         {plant.capacity_mw && <span className="badge">{plant.capacity_mw} MW</span>}
         {plant.name && plant.name.toLowerCase() !== plant.mnemonic && <span className="muted">{plant.name}</span>}
-        {user.role === "gso_admin" && <a className="button ghost push-right" href={`#/admin/plants/${plant.mnemonic}`}>Edit plant</a>}
+        <span className="actions">
+          <a className="button ghost" href={`#/reports?plants=${plant.mnemonic}&category=${cat}${cat === "mmf" ? "&view=mmf" : ""}`}><Icon name="table" />Reports</a>
+          {user.role === "gso_admin" && <a className="button ghost" href={`#/admin/plants/${plant.mnemonic}`}>Edit plant</a>}
+        </span>
       </div>
       <div className="tabs" role="tablist" aria-label="Endpoint">
         {CATS.map(c => <button key={c} role="tab" aria-selected={c === cat} aria-controls="ep-panel" className={c === cat ? "on" : ""} onClick={() => { setCat(c); setPollErr(""); }}>{CAT_LABEL[c]}</button>)}

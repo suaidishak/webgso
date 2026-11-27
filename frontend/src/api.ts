@@ -33,3 +33,22 @@ export const CATS = ["rolling", "dayahead", "weekahead", "fourmonthsahead", "mmf
 export const CAT_LABEL: Record<string, string> = {
   rolling: "Rolling", dayahead: "Day-ahead", weekahead: "Week-ahead", fourmonthsahead: "4-months", mmf: "MMF",
 };
+
+/** Download a file from the API with the user's token (a plain link can't send the Authorization header). */
+export async function download(path: string, fallbackName = "export.csv") {
+  const headers: Record<string, string> = {};
+  const t = getToken();
+  if (t) headers.authorization = `Bearer ${t}`;
+  const res = await fetch(`/api/v1${path}`, { headers });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const d = await res.json(); if (typeof d?.detail === "string") msg = d.detail; } catch { /* not JSON */ }
+    throw new ApiError(res.status, msg);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "")?.[1] || fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}

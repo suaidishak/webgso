@@ -362,3 +362,35 @@ button[aria-expanded="true"] .chev { transform: rotate(90deg); }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 .msg-cell { min-width: 260px; }
+
+/* reports */
+.report-filters { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 14px; padding: 16px 18px; }
+.report-filters .chips { max-width: none; }
+.report-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.report-row .field { margin: 0; min-width: 180px; }
+.check-field { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font-size: 13px; cursor: pointer; }
+.scope-chips { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.scope-chips .chip { gap: 8px; cursor: default; }
+.scope-chips button.icon { min-height: 20px; min-width: 20px; padding: 0; border: 0; }
+.report-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.report-bar .tabs { margin: 0; }
+.report-count { display: inline-flex; align-items: center; gap: 6px; }
+.report-hint { margin: 8px 0 10px; }
+.sheet { max-height: calc(100dvh - 330px); overflow: auto; }
+.sheet table { font-size: 12.5px; }
+.sheet th, .sheet td { padding: 5px 10px; white-space: nowrap; border-right: 1px solid var(--line); }
+.sheet td { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+.sheet thead th { padding: 0; }
+.sheet button.sort { width: 100%; justify-content: flex-start; background: transparent; color: inherit; border: 0; border-radius: 0; min-height: 30px;
+  padding: 5px 10px; font: inherit; text-transform: inherit; letter-spacing: inherit; font-weight: 600; gap: 4px; }
+.sheet th.num button.sort { justify-content: flex-end; }
+.sheet button.sort:hover { background: var(--hover); filter: none; color: var(--text); }
+.sheet .sort-ind { font-size: 9px; color: var(--accent); min-width: 8px; }
+.sheet .rownum { color: var(--muted); background: var(--raised); position: sticky; left: 0; z-index: 1; }
+.sheet thead .rownum { z-index: 2; padding: 5px 10px; }
+.sheet.stale tbody { opacity: .55; transition: opacity var(--t-fast) var(--ease); }
+.pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-top: 10px; }
+.pager > span:first-child { margin-right: auto; }
+.pager select { min-height: 26px; padding: 2px 6px; }
+.card.empty { text-align: center; padding: 28px; }
+.title-row .actions { display: inline-flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }

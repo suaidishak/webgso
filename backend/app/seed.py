@@ -44,6 +44,9 @@ UPGRADES = [
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
     "ALTER TABLE plant ADD COLUMN IF NOT EXISTS polling_enabled BOOLEAN NOT NULL DEFAULT true",
+    # Reports join each poll to its points and readings.
+    "CREATE INDEX IF NOT EXISTS ix_snap_raw ON forecast_snapshot (raw_response_id)",
+    "CREATE INDEX IF NOT EXISTS ix_mmf_attempt ON mmf_reading (poll_attempt_id)",
 ]
 
 

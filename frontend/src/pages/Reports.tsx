@@ -1,0 +1,278 @@
+import { useEffect, useMemo, useState } from "react";
+import { api, download, CATS, CAT_LABEL } from "../api";
+import Icon, { Skeleton, Spinner } from "../Icon";
+
+/* Reports: any selection of polled data as a spreadsheet-style table, and the same selection as CSV.
+   The filters live in the URL (#/reports?plants=bdws&category=dayahead&range=24h...), so a report can be
+   bookmarked or shared, and other pages link here with filters already set. */
+
+type Col = { key: string; label: string; type: "text" | "num" | "dt" | "bool" | "int" };
+type Page = { columns: Col[]; rows: Record<string, any>[]; total: number; polls: number; truncated: boolean };
+
+const VIEWS = [
+  { id: "points", label: "Forecast points", hint: "One row per 15-minute forecast slot." },
+  { id: "mmf", label: "MMF readings", hint: "One row per station and parameter." },
+  { id: "json", label: "As received", hint: "The JSON exactly as the plant sent it, flattened: one row per record, field names as sent." },
+  { id: "polls", label: "Poll log", hint: "One row per poll: HTTP status, verdict and flag counts." },
+] as const;
+
+const RANGES: Record<string, { label: string; hours?: number; today?: boolean }> = {
+  any: { label: "Any time" },
+  "1h": { label: "Last hour", hours: 1 },
+  today: { label: "Today", today: true },
+  "24h": { label: "Last 24 hours", hours: 24 },
+  "7d": { label: "Last 7 days", hours: 24 * 7 },
+  "30d": { label: "Last 30 days", hours: 24 * 30 },
+  custom: { label: "Custom range" },
+};
+const PAGE_SIZES = [100, 250, 500, 1000];
+
+/** Current Malaysia time as "YYYY-MM-DDTHH:MM" (stored poll times are naive Malaysia time). */
+function myt(offsetHours = 0): string {
+  const d = new Date(Date.now() - offsetHours * 3600_000);
+  return d.toLocaleString("sv-SE", { timeZone: "Asia/Kuala_Lumpur", hour12: false }).replace(" ", "T").slice(0, 16);
+}
+
+type F = { view: string; plants: string[]; category: string; range: string; from: string; to: string;
+  latest: boolean; attempt: string; run: string };
+
+function readQuery(q: string): F {
+  const p = new URLSearchParams(q);
+  const scoped = p.get("attempt") || p.get("run");
+  return {
+    view: p.get("view") || "points",
+    plants: (p.get("plants") || "").split(",").filter(Boolean),
+    category: p.get("category") || "all",
+    range: p.get("range") || (p.get("from") || p.get("to") ? "custom" : scoped ? "any" : "24h"),
+    from: p.get("from") || "", to: p.get("to") || "",
+    latest: p.get("latest") === "1",
+    attempt: p.get("attempt") || "", run: p.get("run") || "",
+  };
+}
+
+/** The URL of this report page (no defaults), so it stays short. */
+function pageQuery(f: F): string {
+  const p = new URLSearchParams();
+  if (f.view !== "points") p.set("view", f.view);
+  if (f.plants.length) p.set("plants", f.plants.join(","));
+  if (f.category !== "all") p.set("category", f.category);
+  if (f.range === "custom") { if (f.from) p.set("from", f.from); if (f.to) p.set("to", f.to); }
+  else if (f.range !== "24h") p.set("range", f.range);
+  if (f.latest) p.set("latest", "1");
+  if (f.attempt) p.set("attempt", f.attempt);
+  if (f.run) p.set("run", f.run);
+  return p.toString();
+}
+
+/** API query: presets are turned into a concrete from/to at request time. */
+function apiQuery(f: F, extra: Record<string, string> = {}): string {
+  const p = new URLSearchParams({ view: f.view, ...extra });
+  if (f.plants.length) p.set("plants", f.plants.join(","));
+  if (f.category !== "all") p.set("category", f.category);
+  const r = RANGES[f.range];
+  if (f.range === "custom") { if (f.from) p.set("from", f.from); if (f.to) p.set("to", f.to + (f.to.length === 16 ? ":59" : "")); }
+  else if (r?.hours) p.set("from", myt(r.hours));
+  else if (r?.today) p.set("from", myt().slice(0, 10) + "T00:00");
+  if (f.latest) p.set("latest", "true");
+  if (f.attempt) p.set("attempt", f.attempt);
+  if (f.run) p.set("run", f.run);
+  return p.toString();
+}
+
+function cell(v: any, type: string) {
+  if (v === null || v === undefined || v === "") return <span className="muted">—</span>;
+  if (type === "bool") return v ? <span className="good">Yes</span> : <span className="bad">No</span>;
+  if (type === "dt" && typeof v === "string") return v.replace("T", " ");
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+export default function Reports({ query }: { query: string }) {
+  const [f, setF] = useState<F>(() => readQuery(query));
+  const [plants, setPlants] = useState<{ mnemonic: string; name: string }[]>([]);
+  const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null);
+  const [size, setSize] = useState(100);
+  const [offset, setOffset] = useState(0);
+  const [page, setPage] = useState<Page | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api("/plants").then(setPlants).catch(() => setPlants([])); }, []);
+  const set = (patch: Partial<F>) => { setF(x => ({ ...x, ...patch })); setOffset(0); };
+
+  // Keep the address bar in step with the filters without adding a history entry for every click.
+  useEffect(() => {
+    const q = pageQuery(f);
+    history.replaceState(null, "", `#/reports${q ? "?" + q : ""}`);
+  }, [f]);
+  // Sorting is per view, since the columns differ.
+  useEffect(() => { setSort(null); }, [f.view]);
+
+  const q = useMemo(() => apiQuery(f, {
+    limit: String(size), offset: String(offset),
+    ...(sort ? { sort: sort.key, dir: sort.desc ? "desc" : "asc" } : {}),
+  }), [f, size, offset, sort]);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true); setErr("");
+    const t = setTimeout(() => {
+      api<Page>(`/reports/rows?${q}`)
+        .then(d => { if (live) setPage(d); })
+        .catch(e => { if (live) { setErr(e.message); setPage(null); } })
+        .finally(() => { if (live) setLoading(false); });
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [q]);
+
+  const exportCsv = async () => {
+    setBusy(true); setErr("");
+    try {
+      await download(`/reports/export.csv?${apiQuery(f, sort ? { sort: sort.key, dir: sort.desc ? "desc" : "asc" } : {})}`);
+    } catch (e: any) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const togglePlant = (m: string) => set({ plants: f.plants.includes(m) ? f.plants.filter(x => x !== m) : [...f.plants, m] });
+  // Keep view and API compatible: MMF data only exists in the MMF view and vice versa.
+  const setCategory = (c: string) => set({
+    category: c,
+    view: c === "mmf" && f.view === "points" ? "mmf" : c !== "mmf" && c !== "all" && f.view === "mmf" ? "points" : f.view,
+  });
+  const setView = (v: string) => set({
+    view: v,
+    category: v === "mmf" && f.category !== "all" && f.category !== "mmf" ? "all"
+      : v === "points" && f.category === "mmf" ? "all" : f.category,
+  });
+  const sortBy = (key: string) => {
+    setSort(s => (s?.key === key ? (s.desc ? null : { key, desc: true }) : { key, desc: false }));
+    setOffset(0);
+  };
+
+  const viewInfo = VIEWS.find(v => v.id === f.view)!;
+  const apis: readonly string[] = f.view === "mmf" ? CATS.filter(c => c === "mmf") : f.view === "points" ? CATS.filter(c => c !== "mmf") : CATS;
+  const total = page?.total ?? 0;
+  const last = Math.min(offset + size, total);
+
+  return (
+    <>
+      <div className="title-row"><h2>Reports</h2>
+        <span className="muted small">Polled data as a table, filtered by plant, API and poll time. Download exactly what you see as CSV.</span>
+      </div>
+
+      <div className="card report-filters">
+        <div className="field plants-field"><span id="plants-lbl">Plants</span>
+          <div className="chips" role="group" aria-labelledby="plants-lbl">
+            <label className={`chip ${f.plants.length ? "" : "on"}`}>
+              <input type="checkbox" checked={!f.plants.length} onChange={() => set({ plants: [] })} />Whole fleet</label>
+            {plants.map(p => (
+              <label key={p.mnemonic} className={`chip ${f.plants.includes(p.mnemonic) ? "on" : ""}`} title={p.name}>
+                <input type="checkbox" checked={f.plants.includes(p.mnemonic)} onChange={() => togglePlant(p.mnemonic)} />{p.mnemonic.toUpperCase()}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="report-row">
+          <label className="field"><span>API</span>
+            <select value={apis.includes(f.category) ? f.category : "all"} onChange={e => setCategory(e.target.value)}>
+              {apis.length > 1 && <option value="all">{f.view === "points" ? "All forecast APIs" : "All APIs"}</option>}
+              {apis.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}
+            </select>
+          </label>
+          <label className="field"><span>Poll time</span>
+            <select value={f.range} onChange={e => set({ range: e.target.value, ...(e.target.value === "custom" && !f.from ? { from: myt(24), to: myt() } : {}) })}>
+              {Object.entries(RANGES).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}
+            </select>
+          </label>
+          {f.range === "custom" && <>
+            <label className="field"><span>From (MYT)</span>
+              <input type="datetime-local" value={f.from} max={f.to || undefined} onChange={e => set({ from: e.target.value })} /></label>
+            <label className="field"><span>To (MYT)</span>
+              <input type="datetime-local" value={f.to} min={f.from || undefined} onChange={e => set({ to: e.target.value })} /></label>
+          </>}
+          <label className="check-field">
+            <input type="checkbox" checked={f.latest} onChange={e => set({ latest: e.target.checked })} />
+            Latest poll only <span className="muted small">(per plant and API, within the time range)</span>
+          </label>
+        </div>
+        {(f.attempt || f.run) && (
+          <div className="scope-chips">
+            <span className="muted small">Limited to</span>
+            {f.attempt && <span className="chip on">Poll #{f.attempt}<a href={`#/attempt/${f.attempt}`} className="small">raw JSON</a>
+              <button className="icon ghost" aria-label="Remove poll filter" onClick={() => set({ attempt: "" })}><Icon name="x" size={12} /></button></span>}
+            {f.run && <span className="chip on">Poll now run #{f.run}<a href={`#/admin/poll/runs/${f.run}`} className="small">open run</a>
+              <button className="icon ghost" aria-label="Remove run filter" onClick={() => set({ run: "" })}><Icon name="x" size={12} /></button></span>}
+          </div>
+        )}
+      </div>
+
+      <div className="report-bar">
+        <div className="tabs" role="tablist" aria-label="Report view">
+          {VIEWS.map(v => <button key={v.id} role="tab" aria-selected={v.id === f.view} className={v.id === f.view ? "on" : ""}
+            title={v.hint} onClick={() => setView(v.id)}>{v.label}</button>)}
+        </div>
+        <span className="muted small report-count" role="status">
+          {loading ? <><Spinner /> Loading…</> : page ? <>{total.toLocaleString()} row{total === 1 ? "" : "s"} from {page.polls.toLocaleString()} poll{page.polls === 1 ? "" : "s"}</> : null}
+        </span>
+        <button className="push-right" onClick={exportCsv} disabled={busy || !total}>{busy ? <><Spinner />Preparing CSV…</> : <><Icon name="download" />Download CSV</>}</button>
+      </div>
+      <p className="muted small report-hint">{viewInfo.hint} Times are Malaysia time (MYT).{page?.truncated && <b className="bad"> Only the first 2,000 polls are flattened in this view. Narrow the time range or plants to see the rest.</b>}</p>
+
+      {err && <div className="error" role="alert">{err}</div>}
+      {!page && loading && <Skeleton rows={8} />}
+      {page && (total === 0 ? (
+        <div className="card empty"><p className="muted">No {viewInfo.label.toLowerCase()} match these filters.
+          {f.range !== "any" && <> Try a wider poll time, or <button className="ghost small-btn" onClick={() => set({ range: "any" })}>any time</button>.</>}</p></div>
+      ) : (
+        <>
+          <div className={`table-wrap sheet ${loading ? "stale" : ""}`}>
+            <table>
+              <thead><tr>
+                <th className="num rownum" scope="col">#</th>
+                {page.columns.map(c => {
+                  const on = sort?.key === c.key;
+                  return (
+                    <th key={c.key} scope="col" className={c.type === "num" || c.type === "int" ? "num" : ""}
+                      aria-sort={on ? (sort!.desc ? "descending" : "ascending") : "none"}>
+                      <button className="sort" onClick={() => sortBy(c.key)} title={`Sort by ${c.label}`}>
+                        {c.label}<span aria-hidden="true" className="sort-ind">{on ? (sort!.desc ? "▼" : "▲") : ""}</span>
+                      </button>
+                    </th>
+                  );
+                })}
+              </tr></thead>
+              <tbody>
+                {page.rows.map((r, i) => (
+                  <tr key={offset + i}>
+                    <td className="num rownum">{offset + i + 1}</td>
+                    {page.columns.map(c => (
+                      <td key={c.key} className={c.type === "num" || c.type === "int" ? "num" : c.type === "dt" ? "nowrap" : ""}>
+                        {c.key === "poll_id" ? <a href={`#/attempt/${r[c.key]}`}>{r[c.key]}</a>
+                          : c.key === "plant" ? <a href={`#/plant/${r[c.key]}`} className="mnem">{String(r[c.key]).toUpperCase()}</a>
+                          : c.key === "api" ? CAT_LABEL[r[c.key]] || r[c.key]
+                          : cell(r[c.key], c.type)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="pager">
+            <span className="muted small">Rows {(offset + 1).toLocaleString()}–{last.toLocaleString()} of {total.toLocaleString()}</span>
+            <label className="small muted">Rows per page{" "}
+              <select value={size} onChange={e => { setSize(Number(e.target.value)); setOffset(0); }}>
+                {PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <button className="ghost small-btn" disabled={offset === 0} onClick={() => setOffset(0)}>First</button>
+            <button className="ghost small-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - size))}>Previous</button>
+            <button className="ghost small-btn" disabled={last >= total} onClick={() => setOffset(offset + size)}>Next</button>
+            <button className="ghost small-btn" disabled={last >= total} onClick={() => setOffset(Math.floor((total - 1) / size) * size)}>Last</button>
+          </div>
+        </>
+      ))}
+    </>
+  );
+}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, CAT_LABEL, fmt } from "../api";
+import { api, download, CAT_LABEL, fmt } from "../api";
 import Icon, { Skeleton } from "../Icon";
 
 /* Raw response inspector: shows the exact JSON a plant returned, with every place that caused a
@@ -57,6 +57,7 @@ function flatten(value: unknown): Line[] {
 export default function Inspect({ id, embedded = false, canPoll = false }: { id: string; embedded?: boolean; canPoll?: boolean }) {
   const [d, setD] = useState<any>(null);
   const [err, setErr] = useState("");
+  const [dlErr, setDlErr] = useState("");
   const [active, setActive] = useState<number | null>(null);
   const [pos, setPos] = useState<Record<number, number>>({});
   const [show, setShow] = useState({ major: true, minor: true });
@@ -139,8 +140,13 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
       {!embedded && <div className="title-row">
         <h2 className="crumbs"><a href="#/">Fleet</a><span className="sep" aria-hidden="true">/</span><a href={`#/plant/${d.plant.mnemonic}`}>{d.plant.mnemonic.toUpperCase()}</a><span className="sep" aria-hidden="true">/</span>{CAT_LABEL[a.category]} response</h2>
         <span className="cell-state"><i className={`dot ${status}`} aria-hidden="true" />{STATUS[status]}</span>
-        {canPoll && <a className="button ghost poll-link" href={`#/admin/poll/${d.plant.mnemonic}/${a.category}/run`}><Icon name="zap" />Poll this API now</a>}
+        <span className="actions">
+          <a className="button ghost" href={`#/reports?attempt=${a.id}&range=any${a.category === "mmf" ? "&view=mmf" : ""}`}><Icon name="table" />View as table</a>
+          <button className="ghost" onClick={() => { setDlErr(""); download(`/reports/export.csv?attempt=${a.id}&view=json`).catch(e => setDlErr(e.message)); }}><Icon name="download" />Download CSV</button>
+          {canPoll && <a className="button ghost" href={`#/admin/poll/${d.plant.mnemonic}/${a.category}/run`}><Icon name="zap" />Poll this API now</a>}
+        </span>
       </div>}
+      {dlErr && <div className="error small" role="alert">{dlErr}</div>}
       <div className="facts">
         <div><span>Polled</span>{fmt(a.started_at)}{a.scheduled_for ? "" : " (manual)"}</div>
         <div><span>HTTP</span>{a.http_status ?? "no response"} · {a.latency_ms} ms</div>

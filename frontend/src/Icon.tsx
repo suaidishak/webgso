@@ -16,6 +16,9 @@ const PATHS: Record<string, string> = {
   pause: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM10 15V9M14 15V9",
   refresh: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M3 21v-5h5M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5",
   plus: "M12 5v14M5 12h14",
+  table: "M3 3h18v18H3zM3 9h18M3 15h18M9 3v18",
+  download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3",
+  x: "M18 6 6 18M6 6l12 12",
 };
 
 export default function Icon({ name, size = 16, className = "" }: { name: keyof typeof PATHS | string; size?: number; className?: string }) {

@@ -9,6 +9,7 @@ import { AdminUsers, AdminSchedules, AdminAudit } from "./pages/Admin";
 import { PlantsList, PlantForm } from "./pages/PlantsAdmin";
 import Inspect from "./pages/Inspect";
 import PollNow from "./pages/PollNow";
+import Reports from "./pages/Reports";
 import Icon from "./Icon";
 
 const THEME_KEY = "gso_theme";
@@ -42,7 +43,7 @@ export default function App() {
     mainRef.current?.focus({ preventScroll: true });
     window.scrollTo(0, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.split("/").slice(0, 3).join("/")]);
+  }, [route.split("?")[0].split("/").slice(0, 3).join("/")]);
   const [user, setUser] = useState<User | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -59,13 +60,15 @@ export default function App() {
   }
   const isAdmin = user.role === "gso_admin";
   const isGso = isAdmin || user.role === "gso_user";
-  const [, page, arg, sub, sub2, sub3] = route.split("/");
+  const [path, query = ""] = route.split("?");
+  const [, page, arg, sub, sub2, sub3] = path.split("/");
 
   let body;
   if (page === "plant" && arg) body = <PlantPage mnem={arg} user={user} />;
   else if (page === "attempt" && arg) body = <Inspect key={arg} id={arg} canPoll={isAdmin} />;
   else if (page === "alerts") body = <Alerts canAck={isGso} />;
   else if (page === "compliance") body = <Compliance />;
+  else if (page === "reports") body = <Reports key={route} query={query} />;
   else if (page === "admin" && isAdmin && arg === "plants" && sub === "new") body = <PlantForm key="new" />;
   else if (page === "admin" && isAdmin && arg === "plants" && sub) body = <PlantForm key={sub} mnem={sub} />;
   else if (page === "admin" && isAdmin && arg === "plants") body = <PlantsList />;
@@ -91,6 +94,7 @@ export default function App() {
           {link("#/", "Fleet", "grid")}
           {link("#/alerts", "Alerts", "bell")}
           {link("#/compliance", "Compliance", "shield")}
+          {link("#/reports", "Reports", "table")}
           {isAdmin && <span className="nav-sep" aria-hidden="true" />}
           {isAdmin && link("#/admin/poll", "Poll now", "zap")}
           {isAdmin && link("#/admin/plants", "Plants", "sun")}

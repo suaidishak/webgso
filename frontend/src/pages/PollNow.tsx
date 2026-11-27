@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, CATS, CAT_LABEL, fmt } from "../api";
+import { api, download, CATS, CAT_LABEL, fmt } from "../api";
 import Inspect from "./Inspect";
 import Icon, { Skeleton, Spinner } from "../Icon";
 
@@ -115,6 +115,10 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
             <b>{scopeLabel(out.plants, out.category)}</b><span className="muted">polled {fmt(out.polled_at)}{out.by ? ` by ${out.by}` : ""}</span>
             <span><span className="verdict pass">{s.pass} pass</span> <span className="verdict warn">{s.warn} warnings</span> <span className="verdict fail">{s.fail} fail</span></span>
             <span>Alerts: <b className={s.alerts_raised ? "txt-red" : ""}>{s.alerts_raised} new</b> · {s.alerts_ongoing} still open · <b className={s.alerts_cleared ? "txt-green" : ""}>{s.alerts_cleared} cleared</b></span>
+            {out.id && <span className="actions">
+              <a className="button ghost small-btn" href={`#/reports?run=${out.id}&range=any`}><Icon name="table" />View data as table</a>
+              <button className="ghost small-btn" onClick={() => download(`/reports/export.csv?run=${out.id}&view=json`).catch(e => setErr(e.message))}><Icon name="download" />Download CSV</button>
+            </span>}
           </div>
           <div className="table-wrap">
             <table className="poll-results">

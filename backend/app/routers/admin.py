@@ -13,7 +13,7 @@ from ..config import now_local
 from ..db import get_session
 from ..models import (
     CATEGORIES, ROLES, AlertLog, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
-    PollSchedule, PollSwitch,
+    PollRun, PollSchedule, PollSwitch,
     ScheduleRun, UserPlantAccess,
 )
 from ..plant_keys import encrypt, hint as key_hint
@@ -439,13 +439,43 @@ async def poll_now_scope(body: PollNowIn, admin: AppUser = Depends(require_admin
         raise HTTPException(400, "No matching endpoint")
     if len(targets) > 200:
         raise HTTPException(400, "Too many endpoints for one ad-hoc poll")
+    started = now_local()
     results = await _run_now(s, targets)
     summary = _summary(results)
-    await audit(s, admin, "poll.manual", "poll",
-                "fleet" if not body.plants else plants[0].mnemonic if len(plants) == 1 else f"{len(plants)} plants",
-                None, {"plants": body.plants or "all", "category": body.category or "all", **summary})
+    run = PollRun(started_at=started, finished_at=now_local(), user_id=admin.id,
+                  plants=sorted(p.mnemonic for p in plants) if body.plants else None,
+                  category=body.category, summary=summary, results=_jsonable(results))
+    s.add(run)
+    await s.flush()
+    await audit(s, admin, "poll.manual", "poll_run", run.id, None,
+                {"plants": run.plants or "all", "category": body.category or "all", **summary})
     await s.commit()
-    return {"polled_at": now_local(), "results": results, "summary": summary}
+    return await _run_out(s, run, full=True)
+
+
+async def _run_out(s: AsyncSession, r: PollRun, full: bool) -> dict:
+    email = (await s.execute(select(AppUser.email).where(AppUser.id == r.user_id))).scalar_one_or_none() \
+        if r.user_id else None
+    out = {"id": r.id, "polled_at": r.started_at, "finished_at": r.finished_at, "by": email,
+           "plants": r.plants, "category": r.category, "summary": r.summary, "count": len(r.results or [])}
+    if full:
+        out["results"] = r.results
+    return out
+
+
+@router.get("/poll-runs")
+async def list_poll_runs(limit: int = 20, admin: AppUser = Depends(require_admin),
+                         s: AsyncSession = Depends(get_session)):
+    rows = (await s.execute(select(PollRun).order_by(PollRun.id.desc()).limit(min(max(limit, 1), 200)))).scalars().all()
+    return [await _run_out(s, r, full=False) for r in rows]
+
+
+@router.get("/poll-runs/{run_id}")
+async def get_poll_run(run_id: int, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    r = await s.get(PollRun, run_id)
+    if r is None:
+        raise HTTPException(404, "Poll run not found")
+    return await _run_out(s, r, full=True)
 
 
 # ---------------------------------------------------------------- schedules

@@ -49,7 +49,9 @@ export default function App() {
   else if (page === "admin" && isAdmin && arg === "plants" && sub) body = <PlantForm key={sub} mnem={sub} />;
   else if (page === "admin" && isAdmin && arg === "plants") body = <PlantsList />;
   else if (page === "admin" && isAdmin && arg === "poll")
-    body = <PollNow key={route} plant={sub || "all"} category={sub2 || "all"} autorun={sub3 === "run"} />;
+    body = sub === "runs"
+      ? <PollNow key={route} runId={sub2} />
+      : <PollNow key={route} plant={sub || "all"} category={sub2 || "all"} autorun={sub3 === "run"} />;
   else if (page === "admin" && isAdmin && arg === "users") body = <AdminUsers />;
   else if (page === "admin" && isAdmin && arg === "schedules") body = <AdminSchedules />;
   else if (page === "admin" && isAdmin && arg === "audit") body = <AdminAudit />;

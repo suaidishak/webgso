@@ -60,6 +60,21 @@ class LoginEvent(Base):
     success: Mapped[bool] = mapped_column(Boolean)
 
 
+class PollRun(Base):
+    """One ad-hoc Poll now run, kept so its results can be reopened later. The per-call results
+    (verdict, alerts raised, kept open or cleared at that moment) are stored as they were shown;
+    the raw JSON itself stays in raw_response, reached through each result's poll_attempt id."""
+    __tablename__ = "poll_run"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    user_id: Mapped[int | None] = mapped_column(Integer)
+    plants: Mapped[list | None] = mapped_column(JSONB)  # None = whole fleet
+    category: Mapped[str | None] = mapped_column(String(20))  # None = every API
+    summary: Mapped[dict] = mapped_column(JSONB)
+    results: Mapped[list] = mapped_column(JSONB)
+
+
 class AuditEvent(Base):
     """Who changed what: user approvals, schedule edits, plant config."""
     __tablename__ = "audit_event"

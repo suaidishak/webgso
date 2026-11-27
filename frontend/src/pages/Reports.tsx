@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, download, CATS, CAT_LABEL } from "../api";
 import Icon, { Skeleton, Spinner } from "../Icon";
+import Sheet, { SheetCol, cellText } from "../Sheet";
 
 /* Reports: any selection of polled data as a spreadsheet-style table, and the same selection as CSV.
    The filters live in the URL (#/reports?plants=bdws&category=dayahead&range=24h...), so a report can be
    bookmarked or shared, and other pages link here with filters already set. */
 
-type Col = { key: string; label: string; type: "text" | "num" | "dt" | "bool" | "int" };
-type Page = { columns: Col[]; rows: Record<string, any>[]; total: number; polls: number; truncated: boolean };
+type Page = { columns: SheetCol[]; rows: Record<string, any>[]; total: number; polls: number; truncated: boolean };
 
 const VIEWS = [
   { id: "points", label: "Forecast points", hint: "One row per 15-minute forecast slot." },
+  { id: "wide", label: "Forecast by slot", hint: "Like a worksheet: one row per 15-minute slot, one column per plant poll, so plants sit side by side. Latest poll only keeps one column per plant and API." },
   { id: "mmf", label: "MMF readings", hint: "One row per station and parameter." },
   { id: "json", label: "As received", hint: "The JSON exactly as the plant sent it, flattened: one row per record, field names as sent." },
   { id: "polls", label: "Poll log", hint: "One row per poll: HTTP status, verdict and flag counts." },
@@ -34,7 +35,7 @@ function myt(offsetHours = 0): string {
 }
 
 type F = { view: string; plants: string[]; category: string; range: string; from: string; to: string;
-  latest: boolean; attempt: string; run: string };
+  latest: boolean; attempt: string; run: string; cf: Record<string, string> };
 
 function readQuery(q: string): F {
   const p = new URLSearchParams(q);
@@ -47,6 +48,7 @@ function readQuery(q: string): F {
     from: p.get("from") || "", to: p.get("to") || "",
     latest: p.get("latest") === "1",
     attempt: p.get("attempt") || "", run: p.get("run") || "",
+    cf: (() => { try { return JSON.parse(p.get("cf") || "{}"); } catch { return {}; } })(),
   };
 }
 
@@ -61,6 +63,7 @@ function pageQuery(f: F): string {
   if (f.latest) p.set("latest", "1");
   if (f.attempt) p.set("attempt", f.attempt);
   if (f.run) p.set("run", f.run);
+  if (Object.keys(f.cf).length) p.set("cf", JSON.stringify(f.cf));
   return p.toString();
 }
 
@@ -76,15 +79,8 @@ function apiQuery(f: F, extra: Record<string, string> = {}): string {
   if (f.latest) p.set("latest", "true");
   if (f.attempt) p.set("attempt", f.attempt);
   if (f.run) p.set("run", f.run);
+  if (Object.keys(f.cf).length) p.set("cf", JSON.stringify(f.cf));
   return p.toString();
-}
-
-function cell(v: any, type: string) {
-  if (v === null || v === undefined || v === "") return <span className="muted">—</span>;
-  if (type === "bool") return v ? <span className="good">Yes</span> : <span className="bad">No</span>;
-  if (type === "dt" && typeof v === "string") return v.replace("T", " ");
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
 }
 
 export default function Reports({ query }: { query: string }) {
@@ -138,12 +134,13 @@ export default function Reports({ query }: { query: string }) {
   // Keep view and API compatible: MMF data only exists in the MMF view and vice versa.
   const setCategory = (c: string) => set({
     category: c,
-    view: c === "mmf" && f.view === "points" ? "mmf" : c !== "mmf" && c !== "all" && f.view === "mmf" ? "points" : f.view,
+    view: c === "mmf" && (f.view === "points" || f.view === "wide") ? "mmf" : c !== "mmf" && c !== "all" && f.view === "mmf" ? "points" : f.view,
   });
   const setView = (v: string) => set({
-    view: v,
+    view: v, cf: {},
+    latest: v === "wide" && f.view !== "wide" && !f.attempt && !f.run ? true : f.latest,
     category: v === "mmf" && f.category !== "all" && f.category !== "mmf" ? "all"
-      : v === "points" && f.category === "mmf" ? "all" : f.category,
+      : (v === "points" || v === "wide") && f.category === "mmf" ? "all" : f.category,
   });
   const sortBy = (key: string) => {
     setSort(s => (s?.key === key ? (s.desc ? null : { key, desc: true }) : { key, desc: false }));
@@ -151,7 +148,7 @@ export default function Reports({ query }: { query: string }) {
   };
 
   const viewInfo = VIEWS.find(v => v.id === f.view)!;
-  const apis: readonly string[] = f.view === "mmf" ? CATS.filter(c => c === "mmf") : f.view === "points" ? CATS.filter(c => c !== "mmf") : CATS;
+  const apis: readonly string[] = f.view === "mmf" ? CATS.filter(c => c === "mmf") : f.view === "points" || f.view === "wide" ? CATS.filter(c => c !== "mmf") : CATS;
   const total = page?.total ?? 0;
   const last = Math.min(offset + size, total);
 
@@ -176,7 +173,7 @@ export default function Reports({ query }: { query: string }) {
         <div className="report-row">
           <label className="field"><span>API</span>
             <select value={apis.includes(f.category) ? f.category : "all"} onChange={e => setCategory(e.target.value)}>
-              {apis.length > 1 && <option value="all">{f.view === "points" ? "All forecast APIs" : "All APIs"}</option>}
+              {apis.length > 1 && <option value="all">{f.view === "points" || f.view === "wide" ? "All forecast APIs" : "All APIs"}</option>}
               {apis.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}
             </select>
           </label>
@@ -217,60 +214,38 @@ export default function Reports({ query }: { query: string }) {
         </span>
         <button className="push-right" onClick={exportCsv} disabled={busy || !total}>{busy ? <><Spinner />Preparing CSV…</> : <><Icon name="download" />Download CSV</>}</button>
       </div>
-      <p className="muted small report-hint">{viewInfo.hint} Times are Malaysia time (MYT).{page?.truncated && <b className="bad"> Only the first 2,000 polls are flattened in this view. Narrow the time range or plants to see the rest.</b>}</p>
+      <p className="muted small report-hint">{viewInfo.hint} Times are Malaysia time (MYT).{page?.truncated && <b className="bad"> {f.view === "wide" ? "Only the first 100 polls are shown as columns." : "Only the first 2,000 polls are flattened in this view."} Narrow the time range or plants, or tick Latest poll only, to see the rest.</b>}</p>
 
       {err && <div className="error" role="alert">{err}</div>}
       {!page && loading && <Skeleton rows={8} />}
-      {page && (total === 0 ? (
+      {page && (total === 0 && !Object.keys(f.cf).length ? (
         <div className="card empty"><p className="muted">No {viewInfo.label.toLowerCase()} match these filters.
           {f.range !== "any" && <> Try a wider poll time, or <button className="ghost small-btn" onClick={() => set({ range: "any" })}>any time</button>.</>}</p></div>
       ) : (
         <>
-          <div className={`table-wrap sheet ${loading ? "stale" : ""}`}>
-            <table>
-              <thead><tr>
-                <th className="num rownum" scope="col">#</th>
-                {page.columns.map(c => {
-                  const on = sort?.key === c.key;
-                  return (
-                    <th key={c.key} scope="col" className={c.type === "num" || c.type === "int" ? "num" : ""}
-                      aria-sort={on ? (sort!.desc ? "descending" : "ascending") : "none"}>
-                      <button className="sort" onClick={() => sortBy(c.key)} title={`Sort by ${c.label}`}>
-                        {c.label}<span aria-hidden="true" className="sort-ind">{on ? (sort!.desc ? "▼" : "▲") : ""}</span>
-                      </button>
-                    </th>
-                  );
-                })}
-              </tr></thead>
-              <tbody>
-                {page.rows.map((r, i) => (
-                  <tr key={offset + i}>
-                    <td className="num rownum">{offset + i + 1}</td>
-                    {page.columns.map(c => (
-                      <td key={c.key} className={c.type === "num" || c.type === "int" ? "num" : c.type === "dt" ? "nowrap" : ""}>
-                        {c.key === "poll_id" ? <a href={`#/attempt/${r[c.key]}`}>{r[c.key]}</a>
-                          : c.key === "plant" ? <a href={`#/plant/${r[c.key]}`} className="mnem">{String(r[c.key]).toUpperCase()}</a>
-                          : c.key === "api" ? CAT_LABEL[r[c.key]] || r[c.key]
-                          : cell(r[c.key], c.type)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="pager">
-            <span className="muted small">Rows {(offset + 1).toLocaleString()}–{last.toLocaleString()} of {total.toLocaleString()}</span>
-            <label className="small muted">Rows per page{" "}
-              <select value={size} onChange={e => { setSize(Number(e.target.value)); setOffset(0); }}>
-                {PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-            </label>
-            <button className="ghost small-btn" disabled={offset === 0} onClick={() => setOffset(0)}>First</button>
-            <button className="ghost small-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - size))}>Previous</button>
-            <button className="ghost small-btn" disabled={last >= total} onClick={() => setOffset(offset + size)}>Next</button>
-            <button className="ghost small-btn" disabled={last >= total} onClick={() => setOffset(Math.floor((total - 1) / size) * size)}>Last</button>
-          </div>
+          <Sheet columns={page.columns} rows={page.rows} offset={offset} storageKey={f.view === "json" || f.view === "wide" ? `${f.view}:${f.category}` : f.view}
+            sort={sort} onSort={sortBy} loading={loading}
+            filters={f.cf} onFilter={(k, v) => { const cf = { ...f.cf }; if (v) cf[k] = v; else delete cf[k]; set({ cf }); }}
+            display={(c, v) => (c.key === "plant" && typeof v === "string" ? v.toUpperCase() : cellText(v, c.type))}
+            cellLink={(r, c) => {
+              const m = /^p(\d+)$/.exec(c.key);
+              const id = m ? m[1] : r.poll_id;
+              return id ? { href: `#/attempt/${id}`, label: `Open poll #${id} (raw JSON)` } : null;
+            }}
+            footer={
+              <div className="pager">
+                <span className="muted small">Rows {(offset + 1).toLocaleString()}–{last.toLocaleString()} of {total.toLocaleString()}</span>
+                <label className="small muted">Rows per page{" "}
+                  <select value={size} onChange={e => { setSize(Number(e.target.value)); setOffset(0); }}>
+                    {PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+                <button className="ghost small-btn" disabled={offset === 0} onClick={() => setOffset(0)}>First</button>
+                <button className="ghost small-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - size))}>Previous</button>
+                <button className="ghost small-btn" disabled={last >= total} onClick={() => setOffset(offset + size)}>Next</button>
+                <button className="ghost small-btn" disabled={last >= total} onClick={() => setOffset(Math.floor((total - 1) / size) * size)}>Last</button>
+              </div>
+            } />
         </>
       ))}
     </>

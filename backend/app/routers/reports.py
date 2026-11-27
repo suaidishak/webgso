@@ -8,12 +8,17 @@ and API. The views then expand those polls into rows:
   mmf     one row per MMF station reading (from mmf_reading, typed)
   json    the response exactly as received, flattened: one row per record (see flatten.py)
   polls   one row per poll: status, verdict, flag counts
+  wide    forecasts side by side: one row per time slot, one column per poll (plant, API, poll time)
+
+Any column can also be filtered (cf=JSON {column: expression}, see colfilter.py); filters, sorting and
+paging apply to the table and the CSV alike.
 
 Unchanged forecast responses re-use the earlier raw row and snapshot (see poller._ingest), so points are
 reached through the poll's raw_response_id, which makes every poll show its points, changed or not.
 """
 import csv
 import io
+import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -24,14 +29,16 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import current_user, visible_plant_ids
+from ..colfilter import py_match, sql_condition
 from ..db import SessionLocal, get_session
 from ..flatten import ROW_KEY, flatten_text
 from ..models import CATEGORIES, AppUser, Plant, PollRun
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-VIEWS = ("points", "mmf", "json", "polls")
+VIEWS = ("points", "mmf", "json", "polls", "wide")
 JSON_POLL_CAP = 2000  # the json view flattens in Python; beyond this many polls, narrow the filters
+WIDE_POLL_CAP = 100  # columns in the wide forecast layout
 
 
 @dataclass
@@ -91,9 +98,9 @@ FROM = {
     "polls": "sel",
 }
 DEFAULT_ORDER = {
-    "points": "sel.plant, sel.category, sel.started_at, sel.id, fp.start_time",
-    "mmf": "sel.plant, sel.started_at, sel.id, m.is_standard DESC, m.parameter, m.station_no",
-    "polls": "sel.plant, sel.category, sel.started_at, sel.id",
+    "points": "plant, api, polled_at, poll_id, slot_start",
+    "mmf": "plant, polled_at, poll_id, standard DESC, parameter, station",
+    "polls": "plant, api, polled_at, poll_id",
 }
 
 
@@ -109,12 +116,13 @@ class Filters:
     latest: bool
     sort: str | None
     desc: bool
+    colf: dict[str, str]
 
 
 def filters(view: str = "points", plants: str | None = None, category: str | None = None,
             start: datetime | None = Query(None, alias="from"), end: datetime | None = Query(None, alias="to"),
             attempt: int | None = None, run: int | None = None, latest: bool = False,
-            sort: str | None = None, dir: str = "asc") -> Filters:
+            sort: str | None = None, dir: str = "asc", cf: str | None = None) -> Filters:
     if view not in VIEWS:
         raise HTTPException(400, f"view must be one of {', '.join(VIEWS)}")
     cats = [c for c in (category or "").split(",") if c and c != "all"]
@@ -122,7 +130,11 @@ def filters(view: str = "points", plants: str | None = None, category: str | Non
     if bad:
         raise HTTPException(400, f"Unknown API: {', '.join(bad)}")
     pl = [p.strip().lower() for p in (plants or "").split(",") if p.strip() and p.strip() != "all"]
-    return Filters(view, pl, cats, start, end, attempt, run, latest, sort, dir == "desc")
+    try:
+        colf = {str(k): str(v) for k, v in (json.loads(cf) if cf else {}).items() if str(v).strip()}
+    except (ValueError, AttributeError):
+        raise HTTPException(400, "cf must be a JSON object of column filters")
+    return Filters(view, pl, cats, start, end, attempt, run, latest, sort, dir == "desc", colf)
 
 
 async def _selection(f: Filters, user: AppUser, s: AsyncSession) -> tuple[str, dict]:
@@ -133,7 +145,7 @@ async def _selection(f: Filters, user: AppUser, s: AsyncSession) -> tuple[str, d
         ids = [i for i in ids if i in set(wanted)]
     where, params = ["a.plant_id = ANY(:ids)"], {"ids": ids}
     cats = f.categories
-    if f.view == "points":
+    if f.view in ("points", "wide"):
         cats = [c for c in (cats or CATEGORIES) if c != "mmf"] or ["none"]  # MMF has no forecast points
     elif f.view == "mmf":
         cats = ["mmf"] if not cats or "mmf" in cats else ["none"]
@@ -166,24 +178,29 @@ async def _selection(f: Filters, user: AppUser, s: AsyncSession) -> tuple[str, d
     return f"WITH sel AS ({sql})", params
 
 
-def _order(f: Filters, cols: list[Col]) -> str:
-    by = {c.key: c.sql for c in cols}
-    default = DEFAULT_ORDER[f.view]
-    if f.sort in by:
-        return f"{by[f.sort]} {'DESC' if f.desc else 'ASC'} NULLS LAST, {default}"
-    return default
-
-
-def _sql_query(f: Filters, cte: str) -> str:
+def _sql_parts(f: Filters, cte: str) -> tuple[str, str, dict]:
+    """(query without ORDER BY, ORDER BY clause, extra params): the view's rows with column filters applied."""
     cols = COLS[f.view]
     select_list = ", ".join(f"{c.sql} AS {c.key}" for c in cols)
-    return f"{cte} SELECT {select_list} FROM {FROM[f.view]} ORDER BY {_order(f, cols)}"
+    where, params = [], {}
+    for i, c in enumerate(cols):
+        if c.key in f.colf:
+            cond, p = sql_condition(f"q.{c.key}", c.type, f.colf[c.key], f"cf{i}")
+            where.append(cond)
+            params.update(p)
+    sql = f"{cte} SELECT * FROM (SELECT {select_list} FROM {FROM[f.view]}) q"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    order = DEFAULT_ORDER[f.view]
+    if f.sort in {c.key for c in cols}:
+        order = f"q.{f.sort} {'DESC' if f.desc else 'ASC'} NULLS LAST, {order}"
+    return sql, order, params
 
 
 async def _json_rows(f: Filters, cte: str, params: dict, s: AsyncSession) -> tuple[list[Col], list[dict], bool]:
     polls = (await s.execute(text(f"{cte} SELECT sel.*, r.body_text FROM sel "
                                   "LEFT JOIN raw_response r ON r.id = sel.raw_response_id "
-                                  f"ORDER BY {DEFAULT_ORDER['polls']} LIMIT {JSON_POLL_CAP + 1}"), params)).mappings().all()
+                                  f"ORDER BY sel.plant, sel.category, sel.started_at, sel.id LIMIT {JSON_POLL_CAP + 1}"), params)).mappings().all()
     truncated = len(polls) > JSON_POLL_CAP
     cache: dict[int, list[dict]] = {}
     keys: dict[str, None] = {}
@@ -201,14 +218,65 @@ async def _json_rows(f: Filters, cte: str, params: dict, s: AsyncSession) -> tup
         for r in flat:
             keys.update(dict.fromkeys(k for k in r if k != ROW_KEY))
             rows.append({**base, **r})
-    cols = JSON_BASE + [Col(k, k, "text") for k in keys]
+    cols = JSON_BASE + [Col(k, k, _infer_type(rows, k)) for k in keys]
+    return cols, _py_filter_sort(f, cols, rows), truncated
+
+
+async def _wide_rows(f: Filters, cte: str, params: dict, s: AsyncSession) -> tuple[list[Col], list[dict], bool]:
+    """Forecasts side by side, like a worksheet: rows are time slots, each selected poll is a column."""
+    polls = (await s.execute(text(f"{cte} SELECT sel.id, sel.plant, sel.category, sel.started_at FROM sel "
+                                  "ORDER BY sel.plant, sel.category, sel.started_at, sel.id "
+                                  f"LIMIT {WIDE_POLL_CAP + 1}"), params)).mappings().all()
+    truncated = len(polls) > WIDE_POLL_CAP
+    polls = polls[:WIDE_POLL_CAP]
+    ids = [p["id"] for p in polls]
+    pts = (await s.execute(text(
+        "SELECT a.id, fp.start_time, fp.end_time, fp.value_mw FROM poll_attempt a "
+        "JOIN LATERAL (SELECT fs.id FROM forecast_snapshot fs WHERE fs.raw_response_id = a.raw_response_id "
+        "ORDER BY fs.id LIMIT 1) snap ON true JOIN forecast_point fp ON fp.snapshot_id = snap.id "
+        "WHERE a.id = ANY(:ids)"), {"ids": ids})).all() if ids else []
+    by_slot: dict[datetime, dict] = {}
+    for pid, st, et, v in pts:
+        r = by_slot.setdefault(st, {"slot_start": st, "slot_end": et})
+        r[f"p{pid}"] = v
+    cats = {p["category"] for p in polls}
+    cols = [Col("slot_start", "Slot start", "dt"), Col("slot_end", "Slot end", "dt")] + [
+        Col(f"p{p['id']}", f"{p['plant'].upper()}{'' if len(cats) == 1 else ' ' + p['category']} "
+            f"{p['started_at']:%d %b %H:%M}", "num") for p in polls]
+    rows = [by_slot[k] for k in sorted(by_slot)]
+    return cols, _py_filter_sort(f, cols, rows), truncated
+
+
+def _py_filter_sort(f: Filters, cols: list[Col], rows: list[dict]) -> list[dict]:
+    for c in cols:
+        if c.key in f.colf:
+            expr = f.colf[c.key]
+            rows = [r for r in rows if py_match(r.get(c.key), c.type, expr)]
     if f.sort in {c.key for c in cols}:
         k = f.sort
         present = [r for r in rows if r.get(k) is not None]
         missing = [r for r in rows if r.get(k) is None]
         present.sort(key=lambda r: _sortable(r[k]), reverse=f.desc)
         rows = present + missing
-    return cols, rows, truncated
+    return rows
+
+
+def _infer_type(rows: list[dict], key: str) -> str:
+    """'num' when every value present is a number or a numeric string (e.g. ForecastValue "0.0"), else 'text'."""
+    seen = False
+    for r in rows:
+        v = r.get(key)
+        if v is None or v == "":
+            continue
+        if isinstance(v, bool):
+            return "text"
+        if not isinstance(v, (int, float)):
+            try:
+                float(v)
+            except (TypeError, ValueError):
+                return "text"
+        seen = True
+    return "num" if seen else "text"
 
 
 def _sortable(v):
@@ -230,15 +298,23 @@ async def rows(f: Filters = Depends(filters), limit: int = Query(100, ge=1, le=1
     """One page of the report as JSON, with the total row count."""
     cte, params = await _selection(f, user, s)
     polls = (await s.execute(text(f"{cte} SELECT count(*) FROM sel"), params)).scalar_one()
-    if f.view == "json":
-        cols, all_rows, truncated = await _json_rows(f, cte, params, s)
+    if f.view in ("json", "wide"):
+        build = _json_rows if f.view == "json" else _wide_rows
+        cols, all_rows, truncated = await build(f, cte, params, s)
         return {"columns": _cols_out(cols), "rows": all_rows[offset:offset + limit], "total": len(all_rows),
                 "polls": polls, "truncated": truncated}
-    total = (await s.execute(text(f"{cte} SELECT count(*) FROM {FROM[f.view]}"), params)).scalar_one()
-    data = (await s.execute(text(f"{_sql_query(f, cte)} LIMIT :limit OFFSET :offset"),
-                            {**params, "limit": limit, "offset": offset})).mappings().all()
+    sql, order, extra = _sql_parts(f, cte)
+    total = (await s.execute(text(_count_sql(sql)), {**params, **extra})).scalar_one()
+    data = (await s.execute(text(f"{sql} ORDER BY {order} LIMIT :limit OFFSET :offset"),
+                            {**params, **extra, "limit": limit, "offset": offset})).mappings().all()
     return {"columns": _cols_out(COLS[f.view]), "rows": [dict(r) for r in data], "total": total,
             "polls": polls, "truncated": False}
+
+
+def _count_sql(sql: str) -> str:
+    # sql is "WITH sel AS (...) SELECT * FROM (...) q [WHERE ...]": count the same rows.
+    head, sep, tail = sql.partition(") SELECT * FROM (")
+    return f"{head}{sep.replace('SELECT * FROM (', 'SELECT count(*) FROM (')}{tail}"
 
 
 def _cell(v) -> str:
@@ -275,11 +351,14 @@ async def export_csv(f: Filters = Depends(filters), user: AppUser = Depends(curr
                      s: AsyncSession = Depends(get_session)):
     """The whole report as CSV (UTF-8 with BOM so Excel opens it cleanly), streamed from the database."""
     cte, params = await _selection(f, user, s)
-    if f.view == "json":
-        cols, all_rows, _ = await _json_rows(f, cte, params, s)
+    if f.view in ("json", "wide"):
+        build = _json_rows if f.view == "json" else _wide_rows
+        cols, all_rows, _ = await build(f, cte, params, s)
         source = None
     else:
-        cols, all_rows, source = COLS[f.view], None, _sql_query(f, cte)
+        sql, order, extra = _sql_parts(f, cte)
+        cols, all_rows, source = COLS[f.view], None, f"{sql} ORDER BY {order}"
+        params = {**params, **extra}
 
     def line(values) -> str:
         buf = io.StringIO()

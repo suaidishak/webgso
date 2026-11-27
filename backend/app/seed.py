@@ -11,8 +11,9 @@ from .models import (
 )
 
 PILOT_PLANTS = ["kmls", "mals", "kals", "lmms", "bdws", "sids", "skns", "bkhs"]
-# GSO said MMF at these plants has known issues; endpoints exist but are not polled.
-MMF_IGNORED = {"mals", "lmms"}
+# 27 Nov 2026: GSO first asked to skip MALS and LMMS MMF (known issues), then asked to poll them
+# so the alerts and the raw-response inspector show what is wrong with their JSON.
+OLD_MMF_SKIP_NOTE = "Known MMF issues; ignored for now (GSO, 27 Nov 2026)"
 FORECAST_PATHS = {
     "rolling": "forecast/rolling", "dayahead": "forecast/dayahead", "weekahead": "forecast/weekahead",
     "fourmonthsahead": "forecast/fourmonthsahead",
@@ -79,10 +80,13 @@ async def seed():
                 p = Plant(mnemonic=m, name=m.upper(), status="live", auth_method="none", created_at=now_local())
                 for cat, path in FORECAST_PATHS.items():
                     p.endpoints.append(PlantEndpoint(category=cat, url=f"{base}/{m}/{path}"))
-                p.endpoints.append(PlantEndpoint(
-                    category="mmf", url=f"{base}/{m}/{MMF_PATH}", enabled=m not in MMF_IGNORED,
-                    note="Known MMF issues; ignored for now (GSO, 27 Nov 2026)" if m in MMF_IGNORED else None))
+                p.endpoints.append(PlantEndpoint(category="mmf", url=f"{base}/{m}/{MMF_PATH}", enabled=True))
                 s.add(p)
+
+        # Databases seeded before that change: turn on the two skipped MMF endpoints, unless an admin
+        # has since edited them (their note would differ).
+        await s.execute(text("UPDATE plant_endpoint SET enabled = true, note = NULL WHERE note = :n"),
+                        {"n": OLD_MMF_SKIP_NOTE})
 
         if not (await s.execute(select(PollSchedule))).first():
             s.add_all(PollSchedule(plant_id=None, enabled=True, updated_at=now_local(), **d) for d in DEFAULT_SCHEDULES)

@@ -77,7 +77,7 @@ EndTime = StartTime + 15 min, no gaps or duplicate slots, numeric values, no neg
 at most capacity + 5% when capacity is set. `ForecastValue` sent as a string is a minor flag.
 `ForecastCategory` names are minor, because data is mapped by endpoint, not by that field.
 
-MALS and LMMS MMF are seeded as **not polled**: GSO already knows about their MMF issues.
+All 5 endpoints of all 8 pilot plants are polled, including the MMF feeds of MALS and LMMS, which have known issues. Their findings show in the alert log and in the raw response inspector.
 
 ### Default schedules (editable under Schedules)
 

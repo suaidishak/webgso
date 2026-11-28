@@ -9,7 +9,7 @@ from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, Time,
     UniqueConstraint, Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -147,12 +147,14 @@ class PollSwitch(Base):
 
 
 class PollSchedule(Base):
-    """When each category is pulled. plant_id NULL = default for every plant; a plant row overrides it."""
+    """When data is retrieved. A schedule targets all plants or a list of plants, and all APIs or a list of
+    APIs (NULL = all). When several enabled schedules match one plant and API, the most specific wins:
+    see scheduler.precedence()."""
     __tablename__ = "poll_schedule"
-    __table_args__ = (UniqueConstraint("plant_id", "category", name="uq_schedule_scope"),)
     id: Mapped[int] = mapped_column(primary_key=True)
-    plant_id: Mapped[int | None] = mapped_column(ForeignKey("plant.id", ondelete="CASCADE"))
-    category: Mapped[str] = mapped_column(String(30))
+    name: Mapped[str | None] = mapped_column(String(120))
+    plant_ids: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))  # NULL = every plant
+    categories: Mapped[list[str] | None] = mapped_column(ARRAY(String(30)))  # NULL = every API
     kind: Mapped[str] = mapped_column(String(10))  # interval | cron
     interval_minutes: Mapped[int | None] = mapped_column(Integer)
     window_start: Mapped[time | None] = mapped_column(Time)  # optional window for interval schedules
@@ -185,9 +187,9 @@ class ComplianceDeadline(Base):
 
 
 class ScheduleRun(Base):
-    """One row per (schedule, plant, due time): the uniqueness stops a pull from ever being doubled."""
+    """One row per (schedule, plant, API, due time): the uniqueness stops a pull from ever being doubled."""
     __tablename__ = "schedule_run"
-    __table_args__ = (UniqueConstraint("schedule_id", "plant_id", "due_at", name="uq_run"),)
+    __table_args__ = (UniqueConstraint("schedule_id", "plant_id", "category", "due_at", name="uq_run"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     schedule_id: Mapped[int | None] = mapped_column(ForeignKey("poll_schedule.id", ondelete="SET NULL"))
     plant_id: Mapped[int] = mapped_column(ForeignKey("plant.id", ondelete="CASCADE"))

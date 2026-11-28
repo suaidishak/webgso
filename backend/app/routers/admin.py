@@ -22,7 +22,7 @@ from ..models import (
 )
 from ..plant_keys import encrypt, hint as key_hint
 from ..poller import poll_endpoint
-from ..scheduler import next_runs
+from ..scheduler import effective_schedules, in_dates, in_force, matches, next_runs, precedence
 from .auth import user_out
 from .data import plant_out
 from ..seed import FORECAST_PATHS, MMF_PATH
@@ -192,6 +192,10 @@ async def delete_plant(mnem: str, confirm: str = "", admin: AppUser = Depends(re
                (SELECT count(*) FROM forecast_snapshot WHERE plant_id = :id) AS snapshots,
                (SELECT count(*) FROM alert_log WHERE plant_id = :id) AS alerts"""), {"id": p.id})).mappings().one()
     await audit(s, admin, "plant.delete", "plant", p.mnemonic, _jsonable(plant_out(p, admin=True)), dict(counts))
+    # Take the plant out of schedules that list it. A schedule left with no plants governs nothing (it does
+    # not fall back to all plants); the Schedules page shows it as "No plants".
+    await s.execute(text("UPDATE poll_schedule SET plant_ids = array_remove(plant_ids, :id) WHERE :id = ANY(plant_ids)"),
+                    {"id": p.id})
     await s.delete(p)
     await s.commit()
     return {"ok": True, "deleted": dict(counts)}
@@ -716,8 +720,9 @@ async def get_poll_run(run_id: int, admin: AppUser = Depends(require_admin), s: 
 
 # ---------------------------------------------------------------- schedules
 class ScheduleIn(BaseModel):
-    plant: str | None = None  # None = default for all plants
-    category: str
+    name: str = Field(min_length=1, max_length=120)
+    plants: list[str] | None = None  # None = all plants
+    categories: list[str] | None = None  # None = all APIs
     kind: str = Field(pattern="^(interval|cron)$")
     interval_minutes: int | None = Field(None, ge=1, le=1440)
     window_start: time | None = None
@@ -733,53 +738,140 @@ class ScheduleIn(BaseModel):
 
     @model_validator(mode="after")
     def check(self):
-        if self.category not in CATEGORIES:
-            raise ValueError(f"Unknown category {self.category}")
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("Give the schedule a name")
+        if self.plants is not None:
+            self.plants = sorted({p.strip().lower() for p in self.plants if p.strip()})
+            if not self.plants:
+                raise ValueError("Choose at least one plant, or all plants")
+        if self.categories is not None:
+            bad = [c for c in self.categories if c not in CATEGORIES]
+            if bad:
+                raise ValueError(f"Unknown API {bad[0]}")
+            self.categories = [c for c in CATEGORIES if c in self.categories]
+            if not self.categories:
+                raise ValueError("Choose at least one API, or all APIs")
+            if len(self.categories) == len(CATEGORIES):
+                self.categories = None  # every API ticked = all APIs
         if self.kind == "interval" and not self.interval_minutes:
             raise ValueError("interval_minutes is required for an interval schedule")
         if self.kind == "cron" and (not self.cron or not croniter.is_valid(self.cron)):
             raise ValueError("A valid 5-field cron expression is required")
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValueError("The end date is before the start date")
         return self
 
 
-def schedule_out(sc: PollSchedule, mnem: str | None) -> dict:
+async def _plant_maps(s: AsyncSession) -> tuple[dict[int, str], dict[str, int]]:
+    rows = (await s.execute(select(Plant.id, Plant.mnemonic))).all()
+    return {r.id: r.mnemonic for r in rows}, {r.mnemonic: r.id for r in rows}
+
+
+async def _governed_pairs(s: AsyncSession) -> list[tuple[int, str]]:
+    """Every (plant, API) a schedule can govern: each enabled endpoint of a live plant."""
+    return [(r.plant_id, r.category) for r in (await s.execute(
+        select(PlantEndpoint.plant_id, PlantEndpoint.category).join(Plant).where(
+            PlantEndpoint.enabled, Plant.status == "live"))).all()]
+
+
+def schedule_out(sc: PollSchedule, names: dict[int, str], governs: dict[int, int] | None = None,
+                 matched: dict[int, int] | None = None, priority: int | None = None) -> dict:
     d = {c.name: getattr(sc, c.name) for c in PollSchedule.__table__.columns}
-    d["plant"] = mnem
+    d["plants"] = None if sc.plant_ids is None else sorted(names[i] for i in sc.plant_ids if i in names)
     d["next_runs"] = next_runs(sc, now_local()) if sc.enabled else []
+    d["in_force"] = bool(sc.enabled and in_dates(sc, now_local().date()))
+    d["priority"] = priority
+    if governs is not None:
+        d["governs"] = governs.get(sc.id, 0)
+        d["matches"] = (matched or {}).get(sc.id, 0)
     return d
 
 
 @router.get("/schedules")
 async def schedules(admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
-    rows = (await s.execute(select(PollSchedule, Plant.mnemonic).outerjoin(Plant, Plant.id == PollSchedule.plant_id)
-                            .order_by(PollSchedule.plant_id.nulls_first(), PollSchedule.id))).all()
-    return [schedule_out(sc, m) for sc, m in rows]
+    """Every schedule, highest priority first, with how many plant/API pairs it matches and how many it
+    actually governs (the rest are taken by a more specific schedule)."""
+    rows = (await s.execute(select(PollSchedule))).scalars().all()
+    names, _ = await _plant_maps(s)
+    pairs = await _governed_pairs(s)
+    today = now_local().date()
+    eff = effective_schedules(rows, pairs, today)
+    governs: dict[int, int] = {}
+    for sc in eff.values():
+        governs[sc.id] = governs.get(sc.id, 0) + 1
+    matched = {sc.id: sum(1 for p, c in pairs if matches(sc, p, c)) for sc in rows}
+    ordered = sorted(rows, key=precedence)
+    pr = {sc.id: i + 1 for i, sc in enumerate(ordered)}
+    return {"rows": [schedule_out(sc, names, governs, matched, pr[sc.id]) for sc in ordered],
+            "pairs": len(pairs), "unscheduled": len(pairs) - len(eff)}
 
 
-async def _plant_id(s: AsyncSession, mnem: str | None) -> int | None:
-    if mnem is None:
-        return None
-    pid = (await s.execute(select(Plant.id).where(Plant.mnemonic == mnem.lower()))).scalar_one_or_none()
-    if pid is None:
-        raise HTTPException(400, "Unknown plant")
-    return pid
+@router.get("/schedules/coverage")
+async def schedule_coverage(q: str | None = None, region: str | None = None, gaps: bool = False,
+                            schedule: int | None = None, offset: int = 0,
+                            limit: int = 50, admin: AppUser = Depends(require_admin),
+                            s: AsyncSession = Depends(get_session)):
+    """Which schedule governs each plant and API, one page of plants at a time. gaps=true lists only plants
+    with an enabled API that no schedule covers; schedule=<id> lists only plants that schedule governs."""
+    cond = []
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        cond.append(or_(Plant.mnemonic.ilike(like), Plant.name.ilike(like), Plant.region.ilike(like)))
+    if region:
+        cond.append(Plant.region.is_(None) if region == "No region" else Plant.region == region)
+    plants = (await s.execute(select(Plant).where(*cond).order_by(Plant.mnemonic))).scalars().all()
+    scheds = (await s.execute(select(PollSchedule))).scalars().all()
+    today = now_local().date()
+    ranked = in_force(scheds, today)
+    sw = await load_switches(s)
+    out = []
+    for p in plants:
+        cells = {}
+        for cat in CATEGORIES:
+            ep = next((e for e in p.endpoints if e.category == cat), None)
+            hits = [sc for sc in ranked if matches(sc, p.id, cat)]
+            state = ("no_endpoint" if ep is None else "endpoint_off" if not ep.enabled
+                     else "not_live" if p.status != "live" else "scheduled" if hits else "none")
+            cells[cat] = {"state": state, "schedule_id": hits[0].id if hits else None,
+                          "also": [h.id for h in hits[1:]],
+                          "off_reason": off_reason(sw, p, ep) if ep is not None and ep.enabled else None}
+        if gaps and not any(c["state"] == "none" for c in cells.values()):
+            continue
+        if schedule and not any(c["state"] == "scheduled" and c["schedule_id"] == schedule for c in cells.values()):
+            continue
+        out.append({"plant": p.mnemonic, "name": p.name, "region": p.region, "status": p.status, "cells": cells})
+    lim = max(1, min(limit, 500))
+    return {"rows": out[max(0, offset):max(0, offset) + lim], "total": len(out), "offset": offset, "limit": lim}
+
+
+async def _schedule_fields(s: AsyncSession, body: ScheduleIn) -> dict:
+    data = body.model_dump(exclude={"plants"})
+    if body.plants is None:
+        data["plant_ids"] = None
+    else:
+        _, ids = await _plant_maps(s)
+        unknown = [m for m in body.plants if m not in ids]
+        if unknown:
+            raise HTTPException(400, f"Unknown plant {unknown[0].upper()}")
+        data["plant_ids"] = sorted(ids[m] for m in body.plants)
+    return data
+
+
+def _audit_view(sc: PollSchedule, names: dict[int, str]) -> dict:
+    return {k: v for k, v in schedule_out(sc, names).items() if k not in ("next_runs", "in_force", "priority")}
 
 
 @router.post("/schedules", status_code=201)
 async def create_schedule(body: ScheduleIn, admin: AppUser = Depends(require_admin),
                           s: AsyncSession = Depends(get_session)):
-    pid = await _plant_id(s, body.plant)
-    if (await s.execute(select(PollSchedule).where(PollSchedule.plant_id.is_(None) if pid is None else
-                                                   PollSchedule.plant_id == pid,
-                                                   PollSchedule.category == body.category))).first():
-        raise HTTPException(409, "A schedule for this scope and category already exists; edit it instead")
-    data = body.model_dump(exclude={"plant"})
-    sc = PollSchedule(plant_id=pid, updated_at=now_local(), updated_by=admin.id, **data)
+    sc = PollSchedule(updated_at=now_local(), updated_by=admin.id, **await _schedule_fields(s, body))
     s.add(sc)
     await s.flush()
     await audit(s, admin, "schedule.create", "poll_schedule", sc.id, None, body.model_dump())
     await s.commit()
-    return schedule_out(sc, body.plant)
+    names, _ = await _plant_maps(s)
+    return schedule_out(sc, names)
 
 
 @router.put("/schedules/{sid}")
@@ -788,13 +880,14 @@ async def update_schedule(sid: int, body: ScheduleIn, admin: AppUser = Depends(r
     sc = await s.get(PollSchedule, sid)
     if sc is None:
         raise HTTPException(404, "Schedule not found")
-    before = {k: v for k, v in schedule_out(sc, None).items() if k != "next_runs"}
-    for k, v in body.model_dump(exclude={"plant", "category"}).items():
+    names, _ = await _plant_maps(s)
+    before = _audit_view(sc, names)
+    for k, v in (await _schedule_fields(s, body)).items():
         setattr(sc, k, v)
     sc.updated_at, sc.updated_by = now_local(), admin.id
     await audit(s, admin, "schedule.update", "poll_schedule", sid, before, body.model_dump())
     await s.commit()
-    return schedule_out(sc, body.plant)
+    return schedule_out(sc, names)
 
 
 @router.delete("/schedules/{sid}")
@@ -802,10 +895,8 @@ async def delete_schedule(sid: int, admin: AppUser = Depends(require_admin), s: 
     sc = await s.get(PollSchedule, sid)
     if sc is None:
         raise HTTPException(404, "Schedule not found")
-    if sc.plant_id is None:
-        raise HTTPException(400, "Default schedules cannot be deleted; disable them instead")
-    await audit(s, admin, "schedule.delete", "poll_schedule", sid,
-                {k: v for k, v in schedule_out(sc, None).items() if k != "next_runs"}, None)
+    names, _ = await _plant_maps(s)
+    await audit(s, admin, "schedule.delete", "poll_schedule", sid, _audit_view(sc, names), None)
     await s.delete(sc)
     await s.commit()
     return {"ok": True}

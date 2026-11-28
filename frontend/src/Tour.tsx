@@ -84,7 +84,9 @@ const STEPS: Step[] = [
   {
     title: "Schedules",
     admin: true, route: "#/admin/schedules", target: [nav("#/admin/schedules")],
-    body: () => <p>When each API is retrieved and when submissions are due. Change the interval or cron timing, retries and timeouts per API.</p>,
+    body: () => <p>When each API is retrieved and when submissions are due. A schedule can cover all plants or chosen plants (search or pick by region),
+      and all APIs or chosen APIs. Where schedules overlap, the most specific one wins: chosen plants beat all plants, then fewer APIs beat more.
+      The list is in priority order, and <b>Which schedule governs each plant</b> shows the schedule used for every plant and API.</p>,
   },
   {
     title: "Audit",

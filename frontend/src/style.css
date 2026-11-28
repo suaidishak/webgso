@@ -594,3 +594,21 @@ tbody tr.sel > td, tbody tr.sel > th { background: var(--accent-soft); }
 .tour-dont { font-size: 12.5px; color: var(--muted); min-height: 28px; }
 .tour-nav { display: flex; gap: 6px; margin-left: auto; }
 @media (prefers-reduced-motion: reduce) { .tour-spot, .tour-bubble { transition: none; } }
+
+/* retrieval schedules: priority list and "which schedule governs" grid */
+.precedence { margin: 10px 0 14px; padding: 12px 16px; }
+.precedence summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.precedence ol { margin: 10px 0 6px; padding-left: 20px; display: grid; gap: 3px; }
+.precedence p { margin: 4px 0 0; }
+table.schedules tr.dim td { opacity: .6; }
+table.schedules td.actions { gap: 4px; }
+.link-btn { background: none; border: 0; padding: 0; min-height: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.link-btn:hover { filter: brightness(1.15); background: none; }
+table.coverage td { white-space: nowrap; }
+.gov { display: inline-block; max-width: 210px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; font-size: 12px; color: var(--muted); }
+.gov b { font-variant-numeric: tabular-nums; }
+.gov.specific { color: var(--text); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 6px; padding: 1px 6px; }
+.gov.hit { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }
+.gov.paused { text-decoration: line-through; text-decoration-color: var(--muted); }
+table.schedules td:nth-child(2) { min-width: 150px; }
+table.schedules td:nth-child(5) { white-space: nowrap; }

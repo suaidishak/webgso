@@ -20,6 +20,8 @@ FORECAST_PATHS = {
     "rolling": "forecast/rolling", "dayahead": "forecast/dayahead", "weekahead": "forecast/weekahead",
     "fourmonthsahead": "forecast/fourmonthsahead",
 }
+CAT_NAMES = {"rolling": "Rolling", "dayahead": "Day-ahead", "weekahead": "Week-ahead",
+             "fourmonthsahead": "4-months", "mmf": "MMF"}
 MMF_PATH = "mmf/live"  # as served by the pilot host; rev5 says live/mmf
 
 # rev5 defaults. Admins edit these in the dashboard; they are only seeded once.
@@ -61,6 +63,29 @@ UPGRADES = [
     # Reports join each poll to its points and readings.
     "CREATE INDEX IF NOT EXISTS ix_snap_raw ON forecast_snapshot (raw_response_id)",
     "CREATE INDEX IF NOT EXISTS ix_mmf_attempt ON mmf_reading (poll_attempt_id)",
+    # 28 Nov 2026: a schedule targets all/one/many plants and all/one/many APIs instead of one plant
+    # (or all) and one API. Old rows are carried over as one-plant / one-API targets.
+    "ALTER TABLE poll_schedule ADD COLUMN IF NOT EXISTS name VARCHAR(120)",
+    "ALTER TABLE poll_schedule ADD COLUMN IF NOT EXISTS plant_ids INTEGER[]",
+    "ALTER TABLE poll_schedule ADD COLUMN IF NOT EXISTS categories VARCHAR(30)[]",
+    """DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'poll_schedule' AND column_name = 'category') THEN
+        UPDATE poll_schedule SET categories = ARRAY[category]::VARCHAR(30)[] WHERE categories IS NULL;
+        UPDATE poll_schedule SET plant_ids = ARRAY[plant_id] WHERE plant_id IS NOT NULL AND plant_ids IS NULL;
+        ALTER TABLE poll_schedule DROP CONSTRAINT IF EXISTS uq_schedule_scope;
+        ALTER TABLE poll_schedule DROP COLUMN plant_id;
+        ALTER TABLE poll_schedule DROP COLUMN category;
+      END IF;
+    END $$""",
+    # One schedule can now cover several APIs, so a run is unique per API too.
+    """DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid
+                     AND a.attnum = ANY (c.conkey) WHERE c.conname = 'uq_run' AND a.attname = 'category') THEN
+        ALTER TABLE schedule_run DROP CONSTRAINT IF EXISTS uq_run;
+        ALTER TABLE schedule_run ADD CONSTRAINT uq_run UNIQUE (schedule_id, plant_id, category, due_at);
+      END IF;
+    END $$""",
 ]
 
 
@@ -113,7 +138,17 @@ async def seed():
                         {"n": OLD_MMF_SKIP_NOTE})
 
         if not (await s.execute(select(PollSchedule))).first():
-            s.add_all(PollSchedule(plant_id=None, enabled=True, updated_at=now_local(), **d) for d in DEFAULT_SCHEDULES)
+            s.add_all(PollSchedule(name=f"{CAT_NAMES[d['category']]} (rev5 default)", plant_ids=None,
+                                   categories=[d["category"]], enabled=True, updated_at=now_local(),
+                                   **{k: v for k, v in d.items() if k != "category"}) for d in DEFAULT_SCHEDULES)
+        # Schedules carried over from before names existed.
+        for sc in (await s.execute(select(PollSchedule).where(PollSchedule.name.is_(None)))).scalars().all():
+            cats = ", ".join(CAT_NAMES.get(c, c) for c in (sc.categories or [])) or "All APIs"
+            if sc.plant_ids:
+                mn = (await s.execute(select(Plant.mnemonic).where(Plant.id.in_(sc.plant_ids)))).scalars().all()
+                sc.name = f"{cats} for {', '.join(m.upper() for m in mn)}"[:120]
+            else:
+                sc.name = f"{cats} (rev5 default)"
         if not (await s.execute(select(ComplianceDeadline))).first():
             s.add_all(ComplianceDeadline(plant_id=None, **d) for d in DEFAULT_DEADLINES)
         await s.commit()

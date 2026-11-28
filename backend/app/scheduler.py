@@ -1,8 +1,9 @@
 """DB-driven scheduler and deadline checker (the worker process).
 
-Every tick it reads poll_schedule, works out which plant/endpoint pairs are due and runs them.
+Every tick it reads poll_schedule, picks the one schedule that governs each plant/API pair (most specific
+wins, see precedence()), works out which pairs are due and runs them.
 Edits made in the dashboard take effect on the next tick, with no redeploy. A PostgreSQL
-advisory lock keeps a single active scheduler, and the unique (schedule, plant, due_at) row in
+advisory lock keeps a single active scheduler, and the unique (schedule, plant, API, due_at) row in
 schedule_run means a pull is never doubled.
 """
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from croniter import croniter
 from sqlalchemy import and_, select, text
@@ -77,16 +78,49 @@ def next_runs(sched: PollSchedule, now: datetime, n: int = 5) -> list[datetime]:
     return out
 
 
-def effective_schedules(schedules: list[PollSchedule], plant_ids: list[int]) -> dict[tuple[int, str], PollSchedule]:
-    """Plant override wins over the default (plant_id NULL)."""
-    defaults = {s.category: s for s in schedules if s.plant_id is None}
-    overrides = {(s.plant_id, s.category): s for s in schedules if s.plant_id is not None}
+# ---------------------------------------------------------------- which schedule governs
+ALL = 10 ** 9  # "all plants" / "all APIs" rank below any list
+
+
+def in_dates(sched: PollSchedule, today: date) -> bool:
+    return not ((sched.valid_from and today < sched.valid_from) or (sched.valid_to and today > sched.valid_to))
+
+
+def precedence(sched: PollSchedule) -> tuple:
+    """Sort key: the lowest key wins when several schedules match the same plant and API.
+
+    1. Chosen plants beat all plants, and fewer plants beat more.
+    2. Then fewer APIs beat more APIs (all APIs come last).
+    3. Then a schedule with a date range beats an open-ended one (a temporary change wins while it runs).
+    4. Then the newest schedule wins.
+    """
+    plants = ALL if sched.plant_ids is None else len(sched.plant_ids)
+    apis = ALL if sched.categories is None else len(sched.categories)
+    dated = 0 if (sched.valid_from or sched.valid_to) else 1
+    return (plants, apis, dated, -(sched.id or 0))
+
+
+def matches(sched: PollSchedule, plant_id: int, category: str) -> bool:
+    return ((sched.plant_ids is None or plant_id in sched.plant_ids)
+            and (sched.categories is None or category in sched.categories))
+
+
+def in_force(schedules: list[PollSchedule], today: date) -> list[PollSchedule]:
+    """Enabled schedules inside their dates, highest priority first. A schedule that is off or outside its
+    dates governs nothing, so the next matching schedule takes over."""
+    return sorted((s for s in schedules if s.enabled and in_dates(s, today)), key=precedence)
+
+
+def effective_schedules(schedules: list[PollSchedule], pairs, today: date) -> dict[tuple[int, str], PollSchedule]:
+    """For each (plant_id, category) pair, the one schedule that governs it (pairs with none are left out)."""
+    ranked = [(s, None if s.plant_ids is None else set(s.plant_ids), None if s.categories is None else set(s.categories))
+              for s in in_force(schedules, today)]
     out = {}
-    for pid in plant_ids:
-        for cat in set(defaults) | {c for (p, c) in overrides if p == pid}:
-            sch = overrides.get((pid, cat), defaults.get(cat))
-            if sch and sch.enabled:
+    for pid, cat in pairs:
+        for sch, ps, cs in ranked:
+            if (ps is None or pid in ps) and (cs is None or cat in cs):
                 out[(pid, cat)] = sch
+                break
     return out
 
 
@@ -202,17 +236,14 @@ async def tick(tasks: set[asyncio.Task]):
         rows = (await s.execute(select(PlantEndpoint.plant_id, PlantEndpoint.category).join(Plant).where(
             and_(PlantEndpoint.enabled, Plant.status == "live", Plant.polling_enabled)))).all()
         enabled = {(r.plant_id, r.category) for r in rows if sw.types.get(r.category, True)}
-        plant_ids = sorted({p for p, _ in enabled})
         due_rows, by_key = [], {}
-        for (pid, cat), sch in effective_schedules(schedules, plant_ids).items():
-            if (pid, cat) not in enabled:
-                continue
+        for (pid, cat), sch in effective_schedules(schedules, sorted(enabled), now.date()).items():
             due = last_due(sch, now)
             if due is None or now - due > catchup:
                 continue
             due_rows.append(dict(schedule_id=sch.id, plant_id=pid, category=cat, due_at=due, enqueued_at=now,
                                  status="queued"))
-            by_key[(sch.id, pid, due)] = sch
+            by_key[(sch.id, pid, cat, due)] = sch
         # One multi-row insert per 1,000 due pulls instead of a round trip each: at 100+ plants a tick
         # can have hundreds due at once. Rows already there (pulled earlier this period) are skipped.
         jobs = []
@@ -221,7 +252,7 @@ async def tick(tasks: set[asyncio.Task]):
                 constraint="uq_run").returning(ScheduleRun.id, ScheduleRun.schedule_id, ScheduleRun.plant_id,
                                                ScheduleRun.category, ScheduleRun.due_at))
             for r in res.all():
-                sch = by_key[(r.schedule_id, r.plant_id, r.due_at)]
+                sch = by_key[(r.schedule_id, r.plant_id, r.category, r.due_at)]
                 jobs.append((r.id, r.plant_id, r.category, r.due_at, sch.timeout_s, sch.retries,
                              sch.retry_backoff_s, sch.jitter_s))
         await s.commit()

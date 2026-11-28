@@ -60,8 +60,9 @@ const STEPS: Step[] = [
   {
     title: "Reports",
     route: "#/reports", target: [nav("#/reports")],
-    body: () => <p>All polled data as a spreadsheet-style table. Pick plants, API and time range, switch to the forecast-by-slot view,
-      filter any column, and download exactly what you see as CSV.</p>,
+    body: () => <p>Opens on the <b>client templates</b>: forecasts in the DDQ layout with one column per LSS, and MMF with one sheet per
+      parameter (each station or the average, at 5, 15 or 60 minutes; missing readings show as highlighted 0s). View them online or
+      <b> Download Excel</b>. <b>Table view</b> has every polled point as a filterable table with CSV download.</p>,
   },
   {
     title: "Poll now",

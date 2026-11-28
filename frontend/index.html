@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b1120" />
+    <meta name="description" content="Grid System Operator (GSO) Solar Data Platform: forecast and MMF data from Large Scale Solar plants." />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/gso-icon-32.png" />
+    <link rel="apple-touch-icon" href="/brand/gso-icon-180.png" />
+    <title>GSO Solar Data Platform</title>
+    <script>
+      // Apply the saved theme before first paint (dark by default) to avoid a flash.
+      try { document.documentElement.dataset.theme = localStorage.getItem("gso_theme") || "dark"; }
+      catch (e) { document.documentElement.dataset.theme = "dark"; }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

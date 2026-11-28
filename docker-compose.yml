@@ -1,0 +1,73 @@
+# Local beta: docker compose up --build   then open http://localhost:8080
+# Offline demo against simulated plants: SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
+# Report emails: see them at http://localhost:8025 (Mailpit). Set SMTP_* in .env to send real email.
+# Simulated plants: with --profile mock the simulator also serves 5 SOAP and 20 REST fictitious plants
+# (Bukit Contoh Solar, ...), which the platform adds automatically, marked SIM. Remove them on the Plants page.
+# Same, with a 120-plant fleet:  SEED_MOCK_FLEET=120 SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gso
+      POSTGRES_PASSWORD: gso
+      POSTGRES_DB: gso
+    volumes: [dbdata:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gso"]
+      interval: 5s
+      retries: 20
+
+  api:
+    build: ./backend
+    env_file: [{ path: .env, required: false }]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gso:gso@db:5432/gso
+      SEED_BASE_URL: ${SEED_BASE_URL:-https://ws3.gedine.work}
+      SEED_MOCK_FLEET: ${SEED_MOCK_FLEET:-0}
+      # Plant simulator: its fictitious plants are added when it is running (--profile mock); otherwise ignored.
+      SIM_BASE_URL: ${SIM_BASE_URL:-http://mockplants:9000}
+      # Report emails go to the local Mailpit catcher (http://localhost:8025) unless .env sets a real server.
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURITY: ${SMTP_SECURITY:-none}
+    depends_on: { db: { condition: service_healthy } }
+    ports: ["8000:8000"]
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file: [{ path: .env, required: false }]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://gso:gso@db:5432/gso
+      SEED_BASE_URL: ${SEED_BASE_URL:-https://ws3.gedine.work}
+      SEED_MOCK_FLEET: ${SEED_MOCK_FLEET:-0}
+      # Report emails go to the local Mailpit catcher (http://localhost:8025) unless .env sets a real server.
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURITY: ${SMTP_SECURITY:-none}
+    depends_on: { db: { condition: service_healthy } }
+    restart: unless-stopped
+
+  # Local mail catcher: every report email lands here instead of real inboxes. Open http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.33
+    ports: ["8025:8025", "1025:1025"]
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    depends_on: [api]
+    ports: ["8080:80"]
+
+  mockplants:
+    profiles: ["mock"]
+    build: ./mockplants
+    environment:
+      MOCK_FAULTS: "sids:dayahead"
+      MOCK_REQUIRE_KEY: "bkhs:demo-key-1234"
+      MOCK_FLEET_FAULTS: "1"  # simulated plants get a realistic mix of faults (down, short, slow, broken MMF)
+    ports: ["9000:9000"]
+
+volumes:
+  dbdata:

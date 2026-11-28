@@ -394,6 +394,7 @@ async def _template_sheets(f: Filters, user: AppUser, s: AsyncSession, interval:
                            source: str) -> tuple[str, list[ct.TSheet]]:
     """The client's template for the chosen API: the DDQ layout for a forecast API, the MMF workbook for MMF."""
     category = f.categories[0] if len(f.categories) == 1 else "dayahead"
+    scoped = bool(f.run or f.attempt)  # only the plants in that run or submission
     if category == "mmf":
         tf = Filters(**{**f.__dict__, "view": "mmf", "categories": ["mmf"]})
         cte, params = await _selection(tf, user, s)
@@ -401,8 +402,8 @@ async def _template_sheets(f: Filters, user: AppUser, s: AsyncSession, interval:
             iv = interval or 15
             if iv not in ct.MMF_INTERVALS:
                 raise HTTPException(400, "MMF interval must be 5, 15 or 60 minutes")
-            return category, await ct.mmf_template(s, cte, params, f.start, f.end, not f.plants, iv,
-                                                   "average" if source == "average" else "station")
+            return category, await ct.mmf_template(s, cte, params, f.start, f.end, not f.plants and not scoped, iv,
+                                                   "average" if source == "average" else "station", scoped)
         except ValueError as e:
             raise HTTPException(400, str(e))
     tf = Filters(**{**f.__dict__, "view": "points", "categories": [category], "latest": f.latest})
@@ -414,7 +415,7 @@ async def _template_sheets(f: Filters, user: AppUser, s: AsyncSession, interval:
     if f.run:  # a Retrieve now run reads like one scheduled submission, at the minute it started
         run = await s.get(PollRun, f.run)
         at = run.started_at.replace(second=0, microsecond=0) if run else None
-    return category, [await ct.forecast_template(s, cte, params, category, f.latest, iv, at)]
+    return category, [await ct.forecast_template(s, cte, params, category, f.latest, iv, at, scoped)]
 
 
 def _sheet_out(sh: ct.TSheet, offset: int = 0, limit: int | None = None) -> dict:

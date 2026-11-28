@@ -105,19 +105,24 @@ def mean(xs: list[float]) -> float:
     return round(sum(xs) / len(xs), 6)
 
 
-async def _plants(s: AsyncSession, cte: str, params: dict, category: str) -> list[dict]:
-    """Selected plants that have this API, in name order: they are the template's LSS columns/rows."""
+async def _plants(s: AsyncSession, cte: str, params: dict, category: str, only_selected: bool = False) -> list[dict]:
+    """Selected plants that have this API, in name order: they are the template's LSS columns/rows.
+    only_selected keeps just the plants with a call in the selection (one submission or one Retrieve now
+    run), so plants outside it don't show up as empty, zero-filled rows."""
+    in_sel = " AND p.id IN (SELECT plant_id FROM sel)" if only_selected else ""
     return [dict(r) for r in (await s.execute(text(
+        f"{cte + ' ' if only_selected else ''}"
         "SELECT p.id, p.mnemonic, p.mmf_station_count FROM plant p JOIN plant_endpoint e ON e.plant_id = p.id "
-        "AND e.category = :cat WHERE p.id = ANY(:ids) ORDER BY p.mnemonic"),
-        {"cat": category, "ids": params["ids"]})).mappings().all()]
+        f"AND e.category = :cat WHERE p.id = ANY(:ids){in_sel} ORDER BY p.mnemonic"),
+        {**params, "cat": category, "ids": params["ids"]})).mappings().all()]
 
 
 async def forecast_template(s: AsyncSession, cte: str, params: dict, category: str, latest: bool,
-                            interval: int = 15, submission_at: datetime | None = None) -> TSheet:
+                            interval: int = 15, submission_at: datetime | None = None,
+                            only_selected: bool = False) -> TSheet:
     """submission_at puts every selected call under one submission time (a Retrieve now run, shown like a
     scheduled submission)."""
-    plants = await _plants(s, cte, params, category)
+    plants = await _plants(s, cte, params, category, only_selected)
     polls = (await s.execute(text(
         f"{cte} SELECT sel.id, sel.plant_id, sel.started_at, "
         "COALESCE(sel.scheduled_for, date_trunc('minute', sel.started_at)) AS sub FROM sel "
@@ -177,8 +182,9 @@ async def forecast_template(s: AsyncSession, cte: str, params: dict, category: s
 
 
 async def mmf_template(s: AsyncSession, cte: str, params: dict, start: datetime | None, end: datetime | None,
-                       whole_fleet: bool, interval: int = 15, source: str = "station") -> list[TSheet]:
-    plants = await _plants(s, cte, params, "mmf")
+                       whole_fleet: bool, interval: int = 15, source: str = "station",
+                       only_selected: bool = False) -> list[TSheet]:
+    plants = await _plants(s, cte, params, "mmf", only_selected)
     data = (await s.execute(text(
         f"{cte} SELECT sel.plant_id, sel.started_at, m.station_no, m.parameter, "
         "COALESCE(m.measured_at, m.retrieved_at) AS t, m.value FROM sel "

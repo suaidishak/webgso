@@ -123,7 +123,7 @@ export default function App() {
           {link("#/compliance", "Compliance", "shield")}
           {link("#/reports", "Reports", "table")}
           {isAdmin && <span className="nav-sep" aria-hidden="true" />}
-          {isAdmin && link("#/admin/poll", "Poll now", "zap")}
+          {isAdmin && link("#/admin/poll", "Retrieve now", "zap")}
           {isAdmin && link("#/admin/plants", "Plants", "sun")}
           {isAdmin && link("#/admin/users", "Users", "users")}
           {isAdmin && link("#/admin/schedules", "Schedules", "clock")}

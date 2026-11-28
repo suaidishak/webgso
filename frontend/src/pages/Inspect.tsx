@@ -143,12 +143,12 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
         <span className="actions">
           <a className="button ghost" href={`#/reports?attempt=${a.id}&range=any${a.category === "mmf" ? "&view=mmf" : ""}`}><Icon name="table" />View as table</a>
           <button className="ghost" onClick={() => { setDlErr(""); download(`/reports/export.csv?attempt=${a.id}&view=json`).catch(e => setDlErr(e.message)); }}><Icon name="download" />Download CSV</button>
-          {canPoll && <a className="button ghost" href={`#/admin/poll/${d.plant.mnemonic}/${a.category}/run`}><Icon name="zap" />Poll this API now</a>}
+          {canPoll && <a className="button ghost" href={`#/admin/poll/${d.plant.mnemonic}/${a.category}/run`}><Icon name="zap" />Retrieve this API now</a>}
         </span>
       </div>}
       {dlErr && <div className="error small" role="alert">{dlErr}</div>}
       <div className="facts">
-        <div><span>Polled</span>{fmt(a.started_at)}{a.scheduled_for ? "" : " (manual)"}</div>
+        <div><span>Retrieved at</span>{fmt(a.started_at)}{a.scheduled_for ? "" : " (manual)"}</div>
         <div><span>HTTP</span>{a.http_status ?? "no response"} · {a.latency_ms} ms</div>
         <div><span>Size</span>{a.bytes ? `${Math.round(a.bytes / 1024)} KB` : "—"}</div>
         <div><span>Findings</span>{majors} major, {flags.length - majors} minor</div>
@@ -156,7 +156,7 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
       </div>
       <p className="muted small url-line"><code>{a.url}</code></p>
       {d.raw && d.raw.first_seen_attempt !== a.id && (
-        <p className="muted small">The plant sent exactly the same content as in an earlier poll (first received {fmt(d.raw.received_at)}), so that stored copy is shown.</p>
+        <p className="muted small">The plant sent exactly the same content as in an earlier submission (first received {fmt(d.raw.received_at)}), so that stored copy is shown.</p>
       )}
 
       <div className={`inspect${embedded ? " embedded" : ""}`}>

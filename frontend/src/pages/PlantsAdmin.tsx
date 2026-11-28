@@ -36,12 +36,12 @@ function PollingPanel({ polling, onChange }: { polling: Polling; onChange: (p: P
     <div className={`card polling ${polling.fleet ? "" : "paused"}`}>
       <div className="polling-fleet">
         <div>
-          <b>Fleet polling</b>
-          <div className="small muted">{polling.fleet ? "Scheduled polling is running for every plant." : "All scheduled polling is paused. Tests and Poll now still work."}</div>
+          <b>Fleet retrieval</b>
+          <div className="small muted">{polling.fleet ? "Scheduled retrieval is running for every plant." : "All scheduled retrieval is paused. Tests and Retrieve now still work."}</div>
         </div>
         {confirm ? (
           <span className="actions">
-            <span className="small">Pause polling for every plant?</span>
+            <span className="small">Pause retrieval for every plant?</span>
             <button className="danger-fill" onClick={() => setFleet(false)}>Pause all</button>
             <button className="ghost" onClick={() => setConfirm(false)}>Cancel</button>
           </span>
@@ -53,7 +53,7 @@ function PollingPanel({ polling, onChange }: { polling: Polling; onChange: (p: P
         <span className="small muted">Endpoint types, for all plants:</span>
         {CATS.map(c => (
           <Switch key={c} on={polling.types[c] !== false} label={CAT_LABEL[c]} disabled={!polling.fleet}
-            title={polling.fleet ? `Pause or resume ${CAT_LABEL[c]} for every plant` : "Fleet polling is paused"}
+            title={polling.fleet ? `Pause or resume ${CAT_LABEL[c]} for every plant` : "Fleet retrieval is paused"}
             onChange={v => setType(c, v)} />
         ))}
       </div>
@@ -242,7 +242,7 @@ export function PlantsList({ query = "" }: { query?: string }) {
           <a className="button" href="#/admin/plants/new"><Icon name="plus" />Add plant</a>
         </span>
       </div>
-      <p className="muted small">The poller reads this registry and the polling switches on every tick, so changes apply within 30 seconds. An endpoint is polled only when the fleet, its endpoint type, its plant and the endpoint itself are all switched on (and the plant is live). API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule. Tick plants to pause, resume, test or poll many at once.</p>
+      <p className="muted small">The scheduler reads this registry and the retrieval switches on every tick, so changes apply within 30 seconds. An endpoint is retrieved only when the fleet, its endpoint type, its plant and the endpoint itself are all switched on (and the plant is live). API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule. Tick plants to pause, resume, test or retrieve many at once.</p>
       {polling && <PollingPanel polling={polling} onChange={onPolling} />}
 
       <div className="card board-tools">
@@ -256,7 +256,7 @@ export function PlantsList({ query = "" }: { query?: string }) {
             <select value={f.status} onChange={e => set({ status: e.target.value })}>
               <option value="">Any</option><option value="live">Live</option><option value="onboarding">Onboarding</option><option value="suspended">Suspended</option>
             </select></label>
-          <label className="field inline-field"><span>Polling</span>
+          <label className="field inline-field"><span>Retrieval</span>
             <select value={f.polling} onChange={e => set({ polling: e.target.value })}>
               <option value="">Any</option><option value="on">On</option><option value="paused">Paused</option>
             </select></label>
@@ -271,10 +271,10 @@ export function PlantsList({ query = "" }: { query?: string }) {
       </div>
 
       <BulkBar count={sel.size} matched={shown.length} onSelectAll={() => setSel(new Set(shown.map(p => p.mnemonic)))} onClear={() => setSel(new Set())}>
-        <a className="button small-btn" href={`#/admin/poll/${[...sel].join(",")}/all/run`}><Icon name="zap" size={14} />Poll now</a>
+        <a className="button small-btn" href={`#/admin/poll/${[...sel].join(",")}/all/run`}><Icon name="zap" size={14} />Retrieve now</a>
         <button className="ghost small-btn" disabled={testingAll} onClick={() => testMany(selRows)}>{testingAll ? <Spinner /> : null}Test</button>
-        <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk("Paused polling", { action: "pause" })}>{busyIcon("Paused polling", "pause")}Pause polling</button>
-        <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk("Resumed polling", { action: "resume" })}>{busyIcon("Resumed polling", "refresh")}Resume polling</button>
+        <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk("Paused retrieval", { action: "pause" })}>{busyIcon("Paused retrieval", "pause")}Pause retrieval</button>
+        <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk("Resumed retrieval", { action: "resume" })}>{busyIcon("Resumed retrieval", "refresh")}Resume retrieval</button>
         <span className="bulk-group">
           <select aria-label="API to pause or resume" value={bulkCat} onChange={e => setBulkCat(e.target.value)}>{CATS.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}</select>
           <button className="ghost small-btn" disabled={!!busy} onClick={() => bulk(`Paused ${CAT_LABEL[bulkCat]}`, { action: "pause_endpoint", category: bulkCat })}>Pause</button>
@@ -296,8 +296,8 @@ export function PlantsList({ query = "" }: { query?: string }) {
       {toggleErr && <div className="error" role="alert">{toggleErr}</div>}
       <div className="table-wrap"><table>
         <thead><tr><th className="sel-col"><PageCheck ids={page.map(p => p.mnemonic)} sel={sel} onChange={setSel} label="Select every plant on this page" /></th>
-          <th><span className="sr-only">Expand</span></th><th>Plant</th><th>Region</th><th>Polling</th><th>Status</th><th className="num">Capacity</th><th>Endpoints polled</th><th>API key</th><th>Last test</th><th></th></tr></thead>
-        <tbody>{!page.length && <tr><td colSpan={11} className="muted">{filtered ? "No plants match these filters." : "No plants yet. Add one, or import several, to start polling."}</td></tr>}{page.map(p => (<Fragment key={p.mnemonic}>
+          <th><span className="sr-only">Expand</span></th><th>Plant</th><th>Region</th><th>Retrieval on/off</th><th>Status</th><th className="num">Capacity</th><th>Endpoints retrieved</th><th>API key</th><th>Last test</th><th></th></tr></thead>
+        <tbody>{!page.length && <tr><td colSpan={11} className="muted">{filtered ? "No plants match these filters." : "No plants yet. Add one, or import several, to start retrieval."}</td></tr>}{page.map(p => (<Fragment key={p.mnemonic}>
           <tr className={sel.has(p.mnemonic) ? "sel" : ""}>
             <td className="sel-col"><input type="checkbox" aria-label={`Select ${p.mnemonic.toUpperCase()}`} checked={sel.has(p.mnemonic)}
               onChange={e => setSel(s => { const n = new Set(s); e.target.checked ? n.add(p.mnemonic) : n.delete(p.mnemonic); return n; })} /></td>
@@ -305,12 +305,12 @@ export function PlantsList({ query = "" }: { query?: string }) {
               onClick={() => setOpen(o => ({ ...o, [p.mnemonic]: !o[p.mnemonic] }))}><Icon name="chevron" className="chev" /></button></td>
             <td><a href={`#/plant/${p.mnemonic}`} className="mnem">{p.mnemonic.toUpperCase()}</a><div className="small muted">{p.name}</div></td>
             <td className="small">{p.region || <span className="muted">—</span>}</td>
-            <td><Switch on={p.polling_enabled} onChange={v => togglePlant(p, v)} title={`Polling for ${p.mnemonic.toUpperCase()}: pause or resume all its endpoints`} /></td>
+            <td><Switch on={p.polling_enabled} onChange={v => togglePlant(p, v)} title={`Retrieval for ${p.mnemonic.toUpperCase()}: pause or resume all its endpoints`} /></td>
             <td><span className={`badge ${p.status === "live" ? "green" : p.status === "onboarding" ? "amber" : ""}`}>{p.status}</span></td>
             <td className="num">{p.capacity_mw ? `${p.capacity_mw} MW` : "—"}</td>
             <td className="small">{CATS.filter(c => p.endpoints.some(e => e.category === c)).map(c => {
               const e = p.endpoints.find(x => x.category === c)!;
-              return <span key={c} className={`chip ${e.polled ? "on-soft" : "off"}`} title={e.polled ? `Polled: ${e.url}` : `Not polled: ${e.off_reason}`}>{CAT_LABEL[c]}</span>;
+              return <span key={c} className={`chip ${e.polled ? "on-soft" : "off"}`} title={e.polled ? `Retrieved: ${e.url}` : `Not retrieved: ${e.off_reason}`}>{CAT_LABEL[c]}</span>;
             })}</td>
             <td><KeyBadge p={p} /></td>
             <td><PlantSummary p={p} tests={tests} /></td>
@@ -327,8 +327,8 @@ export function PlantsList({ query = "" }: { query?: string }) {
                   const e = p.endpoints.find(x => x.category === c)!;
                   return (
                     <tr key={c}>
-                      <td className="ep-switch"><Switch on={e.enabled} onChange={v => toggleEndpoint(p, c, v)} title={`Polling for ${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}`} /></td>
-                      <td><b>{CAT_LABEL[c]}</b><div className={`small ${e.polled ? "good" : "muted"}`}>{e.polled ? "Polled on schedule" : e.off_reason}</div></td>
+                      <td className="ep-switch"><Switch on={e.enabled} onChange={v => toggleEndpoint(p, c, v)} title={`Retrieval for ${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}`} /></td>
+                      <td><b>{CAT_LABEL[c]}</b><div className={`small ${e.polled ? "good" : "muted"}`}>{e.polled ? "Retrieved on schedule" : e.off_reason}</div></td>
                       <td className="mono small url-cell">{e.url}</td>
                       <td><Verdict r={tests[`${p.mnemonic}:${c}`]} /></td>
                       <td><button className="ghost small-btn" aria-label={`Test ${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}`} disabled={tests[`${p.mnemonic}:${c}`] === "running"} onClick={() => test(p.mnemonic, [c], c)}>Test</button></td>
@@ -455,9 +455,9 @@ function DeleteDialog({ p, onClose, onDone }: { p: PlantRow; onClose: () => void
       <div className="card" role="alertdialog" aria-modal="true" aria-labelledby="del-title" onClick={e => e.stopPropagation()}>
         <h3 id="del-title">Delete {p.mnemonic.toUpperCase()}?</h3>
         <p>This permanently removes the plant, its endpoints and key, and all of its stored history
-          {usage ? <>: <b>{usage.polls}</b> polls, <b>{usage.snapshots}</b> forecast snapshots and <b>{usage.alerts}</b> alerts{usage.users ? <>, and its access for <b>{usage.users}</b> LSS user(s)</> : null}</> : null}.
+          {usage ? <>: <b>{usage.polls}</b> submissions, <b>{usage.snapshots}</b> forecast snapshots and <b>{usage.alerts}</b> alerts{usage.users ? <>, and its access for <b>{usage.users}</b> LSS user(s)</> : null}</> : null}.
           Raw responses kept as PPA evidence go too.</p>
-        <p className="muted small">To stop polling but keep the history, edit the plant and set its status to <b>suspended</b> instead.</p>
+        <p className="muted small">To stop retrieval but keep the history, edit the plant and set its status to <b>suspended</b> instead.</p>
         <label className="field">Type <b>{p.mnemonic.toUpperCase()}</b> to confirm
           <input value={typed} onChange={e => setTyped(e.target.value)} autoFocus /></label>
         {err && <div className="error" role="alert">{err}</div>}
@@ -556,7 +556,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
             <label className="field">MMF stations<input type="number" min={0} value={f.mmf_station_count} onChange={e => set("mmf_station_count", e.target.value)} /></label>
             <label className="field">Status
               <select value={f.status} onChange={e => set("status", e.target.value)}>
-                <option value="onboarding">Onboarding (not polled)</option><option value="live">Live (polled)</option><option value="suspended">Suspended (not polled)</option>
+                <option value="onboarding">Onboarding (not retrieved)</option><option value="live">Live (retrieved)</option><option value="suspended">Suspended (not retrieved)</option>
               </select></label>
           </div>
           <div className="row2">
@@ -605,15 +605,15 @@ export function PlantForm({ mnem }: { mnem?: string }) {
             <input aria-label="Base URL" placeholder="Base URL, e.g. https://ws3.gedine.work" value={base} onChange={e => setBase(e.target.value)} />
             <button type="button" className="ghost" onClick={fillFromBase}>Fill all from base URL</button>
           </div>
-          <p className="muted small">Each endpoint has its own full URL, because plants don't all follow the rev5 paths. Leave a URL empty if the plant doesn't serve it. Untick Poll to keep the URL but skip it.</p>
+          <p className="muted small">Each endpoint has its own full URL, because plants don't all follow the rev5 paths. Leave a URL empty if the plant doesn't serve it. Untick Retrieve to keep the URL but skip it.</p>
           <div className="table-wrap"><table>
-            <thead><tr><th>Endpoint</th><th>URL</th><th>Poll</th><th>Note</th>{editing && <th>Test (saved settings)</th>}</tr></thead>
+            <thead><tr><th>Endpoint</th><th>URL</th><th>Retrieve</th><th>Note</th>{editing && <th>Test (saved settings)</th>}</tr></thead>
             <tbody>{f.endpoints.map((e: Endpoint, i: number) => (
               <tr key={e.category}>
                 <td><b>{CAT_LABEL[e.category]}</b></td>
                 <td><input className="url" aria-label={`${CAT_LABEL[e.category]} URL`} value={e.url} placeholder={`https://…/${f.mnemonic.toLowerCase() || "mnem"}/${DEFAULT_PATHS[e.category]}`}
                   onChange={x => setEp(i, "url", x.target.value)} /></td>
-                <td><input type="checkbox" aria-label={`Poll ${CAT_LABEL[e.category]}`} checked={e.enabled} onChange={x => setEp(i, "enabled", x.target.checked)} /></td>
+                <td><input type="checkbox" aria-label={`Retrieve ${CAT_LABEL[e.category]}`} checked={e.enabled} onChange={x => setEp(i, "enabled", x.target.checked)} /></td>
                 <td><input aria-label={`${CAT_LABEL[e.category]} note`} value={e.note ?? ""} onChange={x => setEp(i, "note", x.target.value || null)} /></td>
                 {editing && <td className="test-cell">{e.url.trim() ? (
                   <div className="inline top">

@@ -55,18 +55,18 @@ COLS: dict[str, list[Col]] = {
     "points": [
         Col("plant", "Plant", "text", "sel.plant"),
         Col("api", "API", "text", "sel.category"),
-        Col("polled_at", "Polled at", "dt", "sel.started_at"),
-        Col("poll_id", "Poll ID", "int", "sel.id"),
-        Col("poll_valid", "Poll valid", "bool", "sel.is_valid"),
+        Col("polled_at", "Retrieved at", "dt", "sel.started_at"),
+        Col("poll_id", "Submission ID", "int", "sel.id"),
+        Col("poll_valid", "Valid", "bool", "sel.is_valid"),
         Col("slot_start", "Slot start", "dt", "fp.start_time"),
         Col("slot_end", "Slot end", "dt", "fp.end_time"),
         Col("value_mw", "Value (MW)", "num", "fp.value_mw"),
     ],
     "mmf": [
         Col("plant", "Plant", "text", "sel.plant"),
-        Col("polled_at", "Polled at", "dt", "sel.started_at"),
-        Col("poll_id", "Poll ID", "int", "sel.id"),
-        Col("poll_valid", "Poll valid", "bool", "sel.is_valid"),
+        Col("polled_at", "Retrieved at", "dt", "sel.started_at"),
+        Col("poll_id", "Submission ID", "int", "sel.id"),
+        Col("poll_valid", "Valid", "bool", "sel.is_valid"),
         Col("station", "Station", "int", "m.station_no"),
         Col("parameter", "Parameter", "text", "m.parameter"),
         Col("measured_at", "Measured at", "dt", "m.measured_at"),
@@ -77,8 +77,8 @@ COLS: dict[str, list[Col]] = {
     "polls": [
         Col("plant", "Plant", "text", "sel.plant"),
         Col("api", "API", "text", "sel.category"),
-        Col("polled_at", "Polled at", "dt", "sel.started_at"),
-        Col("poll_id", "Poll ID", "int", "sel.id"),
+        Col("polled_at", "Retrieved at", "dt", "sel.started_at"),
+        Col("poll_id", "Submission ID", "int", "sel.id"),
         Col("http_status", "HTTP", "int", "sel.http_status"),
         Col("poll_valid", "Valid", "bool", "sel.is_valid"),
         Col("major_flags", "Major flags", "int", "sel.major_flags"),
@@ -89,8 +89,8 @@ COLS: dict[str, list[Col]] = {
         Col("url", "URL", "text", "sel.url"),
     ],
 }
-JSON_BASE = [Col("plant", "Plant", "text"), Col("api", "API", "text"), Col("polled_at", "Polled at", "dt"),
-             Col("poll_id", "Poll ID", "int"), Col("poll_valid", "Poll valid", "bool"),
+JSON_BASE = [Col("plant", "Plant", "text"), Col("api", "API", "text"), Col("polled_at", "Retrieved at", "dt"),
+             Col("poll_id", "Submission ID", "int"), Col("poll_valid", "Valid", "bool"),
              Col(ROW_KEY, "Row", "int")]
 
 FROM = {
@@ -166,7 +166,7 @@ async def _selection(f: Filters, user: AppUser, s: AsyncSession) -> tuple[str, d
     if f.run:
         run = await s.get(PollRun, f.run)
         if run is None:
-            raise HTTPException(404, "Poll now run not found")
+            raise HTTPException(404, "Retrieve now run not found")
         where.append("a.id = ANY(:run_ids)")
         params["run_ids"] = [r["attempt_id"] for r in (run.results or []) if r.get("attempt_id")]
     cols = """a.id, a.plant_id, p.mnemonic AS plant, a.category, a.started_at, a.raw_response_id, a.is_valid,
@@ -334,7 +334,7 @@ def _cell(v) -> str:
 def _filename(f: Filters) -> str:
     parts = ["gso", f.view]
     if f.attempt:
-        parts.append(f"poll{f.attempt}")
+        parts.append(f"submission{f.attempt}")
     if f.run:
         parts.append(f"run{f.run}")
     parts.append("-".join(f.plants) if f.plants else "fleet")
@@ -410,7 +410,11 @@ async def _template_sheets(f: Filters, user: AppUser, s: AsyncSession, interval:
     iv = interval or 15
     if iv not in ct.FORECAST_INTERVALS:
         raise HTTPException(400, "Forecast interval must be 15 or 60 minutes")
-    return category, [await ct.forecast_template(s, cte, params, category, f.latest, iv)]
+    at = None
+    if f.run:  # a Retrieve now run reads like one scheduled submission, at the minute it started
+        run = await s.get(PollRun, f.run)
+        at = run.started_at.replace(second=0, microsecond=0) if run else None
+    return category, [await ct.forecast_template(s, cte, params, category, f.latest, iv, at)]
 
 
 def _sheet_out(sh: ct.TSheet, offset: int = 0, limit: int | None = None) -> dict:

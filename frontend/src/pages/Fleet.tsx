@@ -15,7 +15,7 @@ type Board = {
 };
 
 export const STATE_LABEL: Record<string, string> = {
-  ok: "Compliant", minor: "Minor issues", invalid: "Non-compliant", down: "Unreachable", never: "Not polled yet", disabled: "Paused",
+  ok: "Compliant", minor: "Minor issues", invalid: "Non-compliant", down: "Unreachable", never: "Not retrieved yet", disabled: "Paused",
 };
 
 export function Legend() {
@@ -25,10 +25,10 @@ export function Legend() {
 // Filter chips on the board: plants matching each state (any API, or the chosen one).
 const STATE_FILTERS: [string, string][] = [
   ["", "All"], ["problems", "With problems"], ["down", "Unreachable"], ["invalid", "Non-compliant"], ["alerts", "Open alerts"],
-  ["minor", "Minor issues"], ["never", "Not polled yet"], ["disabled", "Paused"], ["healthy", "Healthy"],
+  ["minor", "Minor issues"], ["never", "Not retrieved yet"], ["disabled", "Paused"], ["healthy", "Healthy"],
 ];
 const SORTS: [string, string][] = [
-  ["problems", "Problems first"], ["alerts", "Most open alerts"], ["last_poll", "Stalest poll first"], ["mnemonic", "Mnemonic A–Z"],
+  ["problems", "Problems first"], ["alerts", "Most open alerts"], ["last_poll", "Stalest submission first"], ["mnemonic", "Mnemonic A–Z"],
   ["name", "Name A–Z"], ["region", "Region"], ["capacity", "Largest capacity"],
 ];
 const DEFAULTS = { q: "", state: "", api: "", region: "", status: "", sort: "problems", group: "", density: "detailed", size: "50", page: "0" };
@@ -81,7 +81,7 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
     setBulkBusy(action); setNote("");
     try {
       const r = await api("/admin/plants/bulk", { method: "POST", body: { plants: [...sel], action } });
-      setNote(`${action === "pause" ? "Paused" : "Resumed"} polling for ${r.changed} plant${r.changed === 1 ? "" : "s"}${r.unchanged ? ` (${r.unchanged} already ${action === "pause" ? "paused" : "on"})` : ""}.`);
+      setNote(`${action === "pause" ? "Paused" : "Resumed"} retrieval for ${r.changed} plant${r.changed === 1 ? "" : "s"}${r.unchanged ? ` (${r.unchanged} already ${action === "pause" ? "paused" : "on"})` : ""}.`);
       setTick(t => t + 1);
     } catch (e: any) { setErr(e.message); }
     setBulkBusy("");
@@ -97,7 +97,7 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
       <div className="title-row">
         <h2>Fleet compliance</h2>
         <span className="muted small live" role="status">Updated {fmt(data.generated_at)} MYT · refreshes every 30 s{loading ? " · loading…" : ""}</span>
-        {isAdmin && <a className="button ghost push-right" href="#/admin/poll/all/all/run"><Icon name="zap" />Poll whole fleet now</a>}
+        {isAdmin && <a className="button ghost push-right" href="#/admin/poll/all/all/run"><Icon name="zap" />Retrieve whole fleet now</a>}
       </div>
       {err && <div className="error" role="alert">Couldn't refresh: {err}. Showing the last data received.</div>}
       <div className="tiles">
@@ -108,7 +108,7 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
         {tile("down", counts.down || 0, "Unreachable", "down", "down", "Endpoints not answering or answering with an error. Click to show those plants")}
         {tile("alerts", data.open_alerts ?? 0, "Open alerts", "alerts", "alerts", `${data.facets.alerts ?? 0} plants have open alerts. Click to show them`)}
       </div>
-      {data.polling && !data.polling.fleet && <div className="banner" role="status"><Icon name="pause" />Fleet polling is paused. No plant is being polled on schedule. An admin can resume it on the Plants page.</div>}
+      {data.polling && !data.polling.fleet && <div className="banner" role="status"><Icon name="pause" />Fleet retrieval is paused. No plant is being retrieved on schedule. An admin can resume it on the Plants page.</div>}
       {data.polling && data.polling.fleet && Object.entries(data.polling.types).some(([, v]) => !v) && (
         <div className="banner soft" role="status"><Icon name="pause" />Paused for all plants: {Object.entries(data.polling.types).filter(([, v]) => !v).map(([k]) => CAT_LABEL[k]).join(", ")}.</div>
       )}
@@ -164,9 +164,9 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
 
       {isAdmin && (
         <BulkBar count={sel.size} matched={data.matched} onSelectAll={() => setSel(new Set(data.mnemonics))} onClear={() => setSel(new Set())}>
-          <a className="button small-btn" href={`#/admin/poll/${[...sel].join(",")}/all/run`}><Icon name="zap" size={14} />Poll now</a>
-          <button className="ghost small-btn" disabled={!!bulkBusy} onClick={() => bulk("pause")}>{bulkBusy === "pause" ? <Spinner /> : <Icon name="pause" size={14} />}Pause polling</button>
-          <button className="ghost small-btn" disabled={!!bulkBusy} onClick={() => bulk("resume")}>{bulkBusy === "resume" ? <Spinner /> : <Icon name="refresh" size={14} />}Resume polling</button>
+          <a className="button small-btn" href={`#/admin/poll/${[...sel].join(",")}/all/run`}><Icon name="zap" size={14} />Retrieve now</a>
+          <button className="ghost small-btn" disabled={!!bulkBusy} onClick={() => bulk("pause")}>{bulkBusy === "pause" ? <Spinner /> : <Icon name="pause" size={14} />}Pause retrieval</button>
+          <button className="ghost small-btn" disabled={!!bulkBusy} onClick={() => bulk("resume")}>{bulkBusy === "resume" ? <Spinner /> : <Icon name="refresh" size={14} />}Resume retrieval</button>
           <a className="button ghost small-btn" href={`#/reports?plants=${[...sel].join(",")}&latest=1`}><Icon name="table" size={14} />Reports</a>
           <a className="button ghost small-btn" href={`#/alerts?plants=${[...sel].join(",")}`}><Icon name="bell" size={14} />Alerts</a>
         </BulkBar>
@@ -215,13 +215,13 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
                           <a href={`#/plant/${p.mnemonic}`} className="mnem" title={p.name}>{p.mnemonic.toUpperCase()}</a>
                           {!compact && p.name && p.name.toLowerCase() !== p.mnemonic && <div className="small muted plant-name">{p.name}</div>}
                           {p.status !== "live" && <span className="badge amber small-badge">{p.status}</span>}
-                          {!compact && isAdmin && <a className="poll-plant small" href={`#/admin/poll/${p.mnemonic}/all/run`} title={`Poll every ${p.mnemonic.toUpperCase()} API now and show the raw JSON`}>Poll now</a>}
+                          {!compact && isAdmin && <a className="poll-plant small" href={`#/admin/poll/${p.mnemonic}/all/run`} title={`Retrieve every ${p.mnemonic.toUpperCase()} API now and show the raw JSON`}>Retrieve now</a>}
                         </th>
                         {!grouped && <td className="small muted nowrap">{p.region || "—"}</td>}
                         {CATS.map(c => {
                           const cell = p.cells[c];
                           if (!cell) return <td key={c} className="muted">—</td>;
-                          const tip = `${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}: ${STATE_LABEL[cell.state]}\nLast poll ${fmt(cell.last_poll)}\nLast valid ${fmt(cell.last_valid)}${cell.off_reason ? "\n" + cell.off_reason : ""}${cell.error ? "\n" + cell.error : ""}${cell.attempt_id ? "\nClick to see what in the response caused this" : ""}`;
+                          const tip = `${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}: ${STATE_LABEL[cell.state]}\nLast retrieved ${fmt(cell.last_poll)}\nLast valid ${fmt(cell.last_valid)}${cell.off_reason ? "\n" + cell.off_reason : ""}${cell.error ? "\n" + cell.error : ""}${cell.attempt_id ? "\nClick to see what in the response caused this" : ""}`;
                           return (
                             <td key={c} className={f.api === c ? "col-focus" : ""}>
                               <a href={cell.attempt_id ? `#/attempt/${cell.attempt_id}` : `#/plant/${p.mnemonic}`} className={`cell ${cell.state}`} title={tip}

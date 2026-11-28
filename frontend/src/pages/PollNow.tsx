@@ -15,6 +15,10 @@ type Summary = { pass: number; warn: number; fail: number; alerts_raised: number
 const VERDICT = { pass: "Pass", warn: "Pass with warnings", fail: "Fail" };
 
 /** Link to this page with a scope, optionally running it straight away. */
+/** Reports for one Retrieve now run, in the client template, as if it were a scheduled submission. */
+const runReport = (r: { id: number; category: string | null }) =>
+  `#/reports?run=${r.id}&range=any&fmt=template${r.category && r.category !== "all" ? `&category=${r.category}` : ""}`;
+
 export const pollHref = (plant = "all", category = "all", run = true) =>
   `#/admin/poll/${plant}/${category}${run ? "/run" : ""}`;
 
@@ -109,11 +113,11 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
   const s = out?.summary;
   return (
     <>
-      <div className="title-row"><h2>Poll now</h2></div>
+      <div className="title-row"><h2>Retrieve now</h2></div>
       <p className="muted small">Calls the chosen APIs immediately with each plant's stored key, then shows the raw JSON each one returned,
         with the parts that broke a rule highlighted, and the alerts it raised or cleared. Unlike <b>Test</b> on the Plants page,
-        this is meant for looking at the data: it runs even when scheduled polling is paused, and each call is stored, validated and
-        alerted on like a scheduled poll, marked as manual.</p>
+        this is meant for looking at the data: it runs even when scheduled retrieval is paused, and each call is stored, validated and
+        alerted on like a scheduled retrieval, marked as manual.</p>
 
       <div className="card poll-form">
         <div className="field"><span>Plants</span>
@@ -125,12 +129,12 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
             {CATS.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}
           </select>
         </label>
-        <button onClick={() => run()} disabled={running}>{running ? <><Spinner />Polling…</> : <><Icon name="zap" />Poll now</>}</button>
+        <button onClick={() => run()} disabled={running}>{running ? <><Spinner />Retrieving…</> : <><Icon name="zap" />Retrieve now</>}</button>
       </div>
       {err && <div className="error" role="alert">{err}</div>}
       {progress && (
         <div className="card run-progress" role="status">
-          <div className="findings-head"><b><Spinner /> Polling {scopeLabel(progress.plants, progress.category)}</b>
+          <div className="findings-head"><b><Spinner /> Retrieving {scopeLabel(progress.plants, progress.category)}</b>
             <span className="muted small">{progress.done} of {progress.total} calls done · started {fmt(progress.polled_at)}{progress.by ? ` by ${progress.by}` : ""}</span></div>
           <div className="progress" aria-hidden="true"><i style={{ width: `${Math.round(100 * progress.done / Math.max(1, progress.total))}%` }} /></div>
           <p className="small muted">Large runs carry on in the background. You can leave this page and come back with this run's link; the results appear here when every call is done.</p>
@@ -141,11 +145,12 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
       {out && s && (
         <>
           <div className="poll-summary" role="status">
-            <b>{scopeLabel(out.plants, out.category)}</b><span className="muted">polled {fmt(out.polled_at)}{out.by ? ` by ${out.by}` : ""}</span>
+            <b>{scopeLabel(out.plants, out.category)}</b><span className="muted">retrieved {fmt(out.polled_at)}{out.by ? ` by ${out.by}` : ""}</span>
             <span><span className="verdict pass">{s.pass} pass</span> <span className="verdict warn">{s.warn} warnings</span> <span className="verdict fail">{s.fail} fail</span></span>
             <span>Alerts: <b className={s.alerts_raised ? "txt-red" : ""}>{s.alerts_raised} new</b> · {s.alerts_ongoing} still open · <b className={s.alerts_cleared ? "txt-green" : ""}>{s.alerts_cleared} cleared</b></span>
             {out.id && <span className="actions">
-              <a className="button ghost small-btn" href={`#/reports?run=${out.id}&range=any`}><Icon name="table" />View data as table</a>
+              <a className="button ghost small-btn" href={runReport(out)}><Icon name="table" />View in Reports</a>
+              <a className="button ghost small-btn" href={`#/reports?run=${out.id}&range=any&fmt=table`}><Icon name="list" />View data as table</a>
               <button className="ghost small-btn" onClick={() => download(`/reports/export.csv?run=${out.id}&view=json`).catch(e => setErr(e.message))}><Icon name="download" />Download CSV</button>
             </span>}
           </div>
@@ -209,18 +214,19 @@ export default function PollNow({ plant: p0 = "all", category: c0 = "all", autor
       )}
 
       <div className="card poll-history">
-        <div className="findings-head"><b>Recent runs</b><span className="muted small">Each run has its own link, so you can come back to it or share it.</span></div>
+        <div className="findings-head"><b>Recent runs</b><span className="muted small">Click a time to see that run's data in Reports, in the client template like a scheduled submission. Run details shows the calls, raw JSON and alerts.</span></div>
         {history === null ? <Skeleton rows={3} /> : !history.length ? <p className="muted small">No runs yet.</p> : (
           <table>
-            <thead><tr><th>When</th><th>Scope</th><th>Result</th><th>Alerts</th><th>By</th></tr></thead>
+            <thead><tr><th>When</th><th>Scope</th><th>Result</th><th>Alerts</th><th>By</th><th><span className="sr-only">Run details</span></th></tr></thead>
             <tbody>
               {history.map(h => (
                 <tr key={h.id} className={out?.id === h.id ? "sel" : ""}>
-                  <td><a href={`#/admin/poll/runs/${h.id}`}>{fmt(h.polled_at)}</a></td>
+                  <td><a href={runReport(h)} title="Open this run's data in Reports, laid out like a scheduled submission">{fmt(h.polled_at)}</a></td>
                   <td>{scopeLabel(h.plants, h.category)} <span className="muted small">({h.count} call{h.count === 1 ? "" : "s"})</span></td>
                   <td className="nowrap">{h.status === "running" ? <span className="verdict running"><Spinner />{h.done}/{h.total}</span> : h.status === "failed" ? <span className="verdict fail">stopped</span> : null} {h.summary.fail ? <span className="verdict fail">{h.summary.fail} fail</span> : null} {h.summary.warn ? <span className="verdict warn">{h.summary.warn} warn</span> : null} {h.summary.pass ? <span className="verdict pass">{h.summary.pass} pass</span> : null}</td>
                   <td className="small">{h.summary.alerts_raised} new · {h.summary.alerts_ongoing} open · {h.summary.alerts_cleared} cleared</td>
                   <td className="small muted">{h.by || "—"}</td>
+                  <td><a className="small nowrap" href={`#/admin/poll/runs/${h.id}`}>Run details</a></td>
                 </tr>
               ))}
             </tbody>

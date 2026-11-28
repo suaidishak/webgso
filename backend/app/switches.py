@@ -38,13 +38,13 @@ async def load_switches(s: AsyncSession) -> Switches:
 def off_reason(sw: Switches, plant: Plant, ep: PlantEndpoint) -> str | None:
     """Why this endpoint is not polled on schedule, or None when it is."""
     if not sw.fleet:
-        return "Fleet polling is paused"
+        return "Fleet retrieval is paused"
     if not sw.types.get(ep.category, True):
         return f"{TYPE_LABEL.get(ep.category, ep.category)} is paused for all plants"
     if plant.status != "live":
         return f"Plant status is {plant.status}"
     if not plant.polling_enabled:
-        return "Polling is paused for this plant"
+        return "Retrieval is paused for this plant"
     if not ep.enabled:
         return "This endpoint is paused"
     return None

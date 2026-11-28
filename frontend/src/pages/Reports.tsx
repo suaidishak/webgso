@@ -16,10 +16,10 @@ type Page = { columns: SheetCol[]; rows: Record<string, any>[]; total: number; p
 
 const VIEWS = [
   { id: "points", label: "Forecast points", hint: "One row per 15-minute forecast slot." },
-  { id: "wide", label: "Forecast by slot", hint: "Like a worksheet: one row per 15-minute slot, one column per plant poll, so plants sit side by side. Latest poll only keeps one column per plant and API." },
+  { id: "wide", label: "Forecast by slot", hint: "Like a worksheet: one row per 15-minute slot, one column per plant submission, so plants sit side by side. Latest submission only keeps one column per plant and API." },
   { id: "mmf", label: "MMF readings", hint: "One row per station and parameter." },
   { id: "json", label: "As received", hint: "The JSON exactly as the plant sent it, flattened: one row per record, field names as sent." },
-  { id: "polls", label: "Poll log", hint: "One row per poll: HTTP status, verdict and flag counts." },
+  { id: "polls", label: "Submission log", hint: "One row per submission: HTTP status, verdict and flag counts." },
 ] as const;
 
 const RANGES: Record<string, { label: string; hours?: number; today?: boolean }> = {
@@ -63,6 +63,7 @@ function readQuery(q: string): F {
 function pageQuery(f: F): string {
   const p = new URLSearchParams();
   if (f.fmt === "table") p.set("fmt", "table");
+  else if (f.attempt || f.run) p.set("fmt", "template");  // a scoped link would otherwise open as a table
   if (f.fmt === "table" && f.view !== "points") p.set("view", f.view);
   if (f.plants.length) p.set("plants", f.plants.join(","));
   if (f.category !== "all") p.set("category", f.category);
@@ -174,7 +175,7 @@ export default function Reports({ query }: { query: string }) {
         </div>
         <span className="muted small">{isTpl
           ? "The client's DDQ and MMF templates, online and as an Excel download."
-          : "Polled data as a table, filtered by plant, API and poll time. Download exactly what you see as CSV."}</span>
+          : "Submissions as a table, filtered by plant, API and retrieval time. Download exactly what you see as CSV."}</span>
       </div>
 
       <div className="card report-filters">
@@ -186,7 +187,7 @@ export default function Reports({ query }: { query: string }) {
               {apis.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}
             </select>
           </label>
-          <label className="field"><span>Poll time</span>
+          <label className="field"><span>Retrieval time</span>
             <select value={f.range} onChange={e => set({ range: e.target.value, ...(e.target.value === "custom" && !f.from ? { from: myt(24), to: myt() } : {}) })}>
               {Object.entries(RANGES).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}
             </select>
@@ -199,16 +200,16 @@ export default function Reports({ query }: { query: string }) {
           </>}
           <label className="check-field">
             <input type="checkbox" checked={f.latest} onChange={e => set({ latest: e.target.checked })} />
-            {isTpl ? <>Latest submission only <span className="muted small">(each plant's latest poll in the time range)</span></>
-              : <>Latest poll only <span className="muted small">(per plant and API, within the time range)</span></>}
+            {isTpl ? <>Latest submission only <span className="muted small">(each plant's latest in the time range)</span></>
+              : <>Latest submission only <span className="muted small">(per plant and API, within the time range)</span></>}
           </label>
         </div>
         {(f.attempt || f.run) && (
           <div className="scope-chips">
             <span className="muted small">Limited to</span>
-            {f.attempt && <span className="chip on">Poll #{f.attempt}<a href={`#/attempt/${f.attempt}`} className="small">raw JSON</a>
-              <button className="icon ghost" aria-label="Remove poll filter" onClick={() => set({ attempt: "" })}><Icon name="x" size={12} /></button></span>}
-            {f.run && <span className="chip on">Poll now run #{f.run}<a href={`#/admin/poll/runs/${f.run}`} className="small">open run</a>
+            {f.attempt && <span className="chip on">Submission #{f.attempt}<a href={`#/attempt/${f.attempt}`} className="small">raw JSON</a>
+              <button className="icon ghost" aria-label="Remove submission filter" onClick={() => set({ attempt: "" })}><Icon name="x" size={12} /></button></span>}
+            {f.run && <span className="chip on">Retrieve now run #{f.run}<a href={`#/admin/poll/runs/${f.run}`} className="small">open run</a>
               <button className="icon ghost" aria-label="Remove run filter" onClick={() => set({ run: "" })}><Icon name="x" size={12} /></button></span>}
           </div>
         )}
@@ -221,17 +222,17 @@ export default function Reports({ query }: { query: string }) {
             title={v.hint} onClick={() => setView(v.id)}>{v.label}</button>)}
         </div>
         <span className="muted small report-count" role="status">
-          {loading ? <><Spinner /> Loading…</> : page ? <>{total.toLocaleString()} row{total === 1 ? "" : "s"} from {page.polls.toLocaleString()} poll{page.polls === 1 ? "" : "s"}</> : null}
+          {loading ? <><Spinner /> Loading…</> : page ? <>{total.toLocaleString()} row{total === 1 ? "" : "s"} from {page.polls.toLocaleString()} submission{page.polls === 1 ? "" : "s"}</> : null}
         </span>
         <button className="push-right" onClick={exportCsv} disabled={busy || !total}>{busy ? <><Spinner />Preparing CSV…</> : <><Icon name="download" />Download CSV</>}</button>
       </div>
-      <p className="muted small report-hint">{viewInfo.hint} Times are Malaysia time (MYT).{page?.truncated && <b className="bad"> {f.view === "wide" ? "Only the first 300 polls are shown as columns." : "Only the first 2,000 polls are flattened in this view."} Narrow the time range or plants, or tick Latest poll only, to see the rest.</b>}</p>
+      <p className="muted small report-hint">{viewInfo.hint} Times are Malaysia time (MYT).{page?.truncated && <b className="bad"> {f.view === "wide" ? "Only the first 300 submissions are shown as columns." : "Only the first 2,000 submissions are flattened in this view."} Narrow the time range or plants, or tick Latest poll only, to see the rest.</b>}</p>
 
       {err && <div className="error" role="alert">{err}</div>}
       {!page && loading && <Skeleton rows={8} />}
       {page && (total === 0 && !Object.keys(f.cf).length ? (
         <div className="card empty"><p className="muted">No {viewInfo.label.toLowerCase()} match these filters.
-          {f.range !== "any" && <> Try a wider poll time, or <button className="ghost small-btn" onClick={() => set({ range: "any" })}>any time</button>.</>}</p></div>
+          {f.range !== "any" && <> Try a wider retrieval time, or <button className="ghost small-btn" onClick={() => set({ range: "any" })}>any time</button>.</>}</p></div>
       ) : (
         <>
           <Sheet columns={page.columns} rows={page.rows} offset={offset} storageKey={f.view === "json" || f.view === "wide" ? `${f.view}:${f.category}` : f.view}
@@ -241,7 +242,7 @@ export default function Reports({ query }: { query: string }) {
             cellLink={(r, c) => {
               const m = /^p(\d+)$/.exec(c.key);
               const id = m ? m[1] : r.poll_id;
-              return id ? { href: `#/attempt/${id}`, label: `Open poll #${id} (raw JSON)` } : null;
+              return id ? { href: `#/attempt/${id}`, label: `Open submission #${id} (raw JSON)` } : null;
             }}
             footer={
               <div className="pager">

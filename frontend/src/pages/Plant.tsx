@@ -43,14 +43,14 @@ function Mmf({ mnem }: { mnem: string }) {
   const [d, setD] = useState<any>(null);
   useEffect(() => { api(`/plants/${mnem}/mmf/latest`).then(setD); }, [mnem]);
   if (!d) return <p className="muted">Loading…</p>;
-  if (!d.attempt) return <p className="muted">No MMF poll yet.</p>;
+  if (!d.attempt) return <p className="muted">No MMF submission yet.</p>;
   const stations = Array.from(new Set<number>(d.readings.map((r: any) => r.station))).sort();
   const params: Record<string, any> = {};
   d.readings.forEach((r: any) => { (params[r.parameter] ||= { unit: r.unit, time: r.time, standard: r.standard, v: {} }).v[r.station] = r.value; });
   return (
     <>
       <div className="facts">
-        <div><span>Polled</span>{fmt(d.attempt.started_at)}</div>
+        <div><span>Retrieved at</span>{fmt(d.attempt.started_at)}</div>
         <div><span>HTTP</span>{d.attempt.http_status ?? "—"} in {d.attempt.latency_ms} ms</div>
         <div><span>Status</span><b className={d.attempt.is_valid ? "good" : "bad"}>{d.attempt.is_valid ? "Valid" : "Non-compliant"}</b></div>
         {d.attempt.raw_response_id && <div><span>Evidence</span><a href={`#/attempt/${d.attempt.id}`}>Inspect raw JSON #{d.attempt.raw_response_id}</a></div>}
@@ -64,7 +64,7 @@ function Mmf({ mnem }: { mnem: string }) {
           ))}</tbody>
         </table></div>
       )}
-      <h4>Flags on this poll</h4>
+      <h4>Flags on this submission</h4>
       <Flags flags={d.flags} />
     </>
   );
@@ -86,7 +86,7 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
   const pollNow = async () => {
     setBusy(true); setPollErr("");
     try { await api(`/admin/plants/${mnem}/poll?category=${cat}`, { method: "POST" }); setTick(t => t + 1); }
-    catch (e: any) { setPollErr(`Poll failed: ${e.message}`); }
+    catch (e: any) { setPollErr(`Retrieval failed: ${e.message}`); }
     setBusy(false);
   };
   return (
@@ -106,16 +106,16 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
       <div className="card" id="ep-panel" role="tabpanel">
         <div className="endpoint">
           <code>{ep?.url}</code>
-          {ep && !ep.enabled && <span className="badge">not polled{ep.note ? `: ${ep.note}` : ""}</span>}
-          {user.role === "gso_admin" && ep && <button onClick={pollNow} disabled={busy}>{busy ? <><Spinner />Polling…</> : <><Icon name="zap" />Poll now</>}</button>}
+          {ep && !ep.enabled && <span className="badge">not retrieved{ep.note ? `: ${ep.note}` : ""}</span>}
+          {user.role === "gso_admin" && ep && <button onClick={pollNow} disabled={busy}>{busy ? <><Spinner />Retrieving…</> : <><Icon name="zap" />Retrieve now</>}</button>}
         </div>
         {pollErr && <div className="error" role="alert">{pollErr}</div>}
         <div key={tick}>{cat === "mmf" ? <Mmf mnem={mnem} /> : <Forecast mnem={mnem} cat={cat} />}</div>
       </div>
-      <h3>Recent polls</h3>
+      <h3>Recent submissions</h3>
       <div className="table-wrap"><table>
         <thead><tr><th>Started</th><th>Scheduled</th><th>HTTP</th><th className="num">Latency</th><th className="num">Size</th><th>Result</th><th>Error</th><th></th></tr></thead>
-        <tbody>{!attempts.length && <tr><td colSpan={8} className="muted">No polls of this endpoint yet.</td></tr>}{attempts.map(a => (
+        <tbody>{!attempts.length && <tr><td colSpan={8} className="muted">No submissions from this endpoint yet.</td></tr>}{attempts.map(a => (
           <tr key={a.id}><td>{fmt(a.started_at)}</td><td>{a.scheduled_for ? fmt(a.scheduled_for).slice(11) : "manual"}</td>
             <td>{a.http_status ?? "—"}</td><td className="num">{a.latency_ms} ms</td><td className="num">{a.bytes ? `${Math.round(a.bytes / 1024)} KB` : "—"}</td>
             <td className="nowrap"><i aria-hidden="true" className={`dot ${a.http_status !== 200 ? "down" : a.is_valid ? (a.minor_flags ? "minor" : "ok") : "invalid"}`} />

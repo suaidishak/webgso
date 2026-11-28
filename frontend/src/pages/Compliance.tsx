@@ -113,7 +113,7 @@ export default function Compliance({ query = "" }: { query?: string }) {
         </div>}
       </div>
       <p className="muted small">Checked after each deadline plus its grace period: met, late (arrived after) or missed.</p>
-      {!deadlines ? <Skeleton rows={4} /> : !deadlines.rows.length ? <p className="muted">{f.dstatus || filtered ? "No deadline checks match." : "No deadlines have passed since polling started."}</p> : (
+      {!deadlines ? <Skeleton rows={4} /> : !deadlines.rows.length ? <p className="muted">{f.dstatus || filtered ? "No deadline checks match." : "No deadlines have passed since retrieval started."}</p> : (
         <>
           <div className="table-wrap"><table>
             <thead><tr><th>Due</th><th>Plant</th><th>Endpoint</th><th>Covers from</th><th>First valid</th><th>Status</th></tr></thead>

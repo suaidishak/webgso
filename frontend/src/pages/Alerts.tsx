@@ -62,7 +62,7 @@ export default function Alerts({ canAck, query = "" }: { canAck: boolean; query?
         {loading && data && <span className="muted small"><Spinner /> Loading…</span>}
         <label className="toggle push-right"><input type="checkbox" checked={f.open === "1"} onChange={e => set({ open: e.target.checked ? "1" : "0" })} /> Open only</label>
       </div>
-      <p className="muted small">Alerts are raised automatically from major compliance flags, failed calls and missed deadlines, and cleared when a later poll is clean. They are kept as an audit log and never deleted.</p>
+      <p className="muted small">Alerts are raised automatically from major compliance flags, failed calls and missed deadlines, and cleared when a later submission is clean. They are kept as an audit log and never deleted.</p>
 
       <div className="card board-tools">
         <div className="board-row">
@@ -105,7 +105,7 @@ export default function Alerts({ canAck, query = "" }: { canAck: boolean; query?
       )}
       {err && <div className="error" role="alert">{err}</div>}
       {!data ? (err ? null : <Skeleton rows={5} />) : !data.rows.length ? (
-        <div className="card okline">{filtered ? "No alerts match these filters." : `No ${f.open === "1" ? "open " : ""}alerts. Every polled endpoint is clean.`}</div>
+        <div className="card okline">{filtered ? "No alerts match these filters." : `No ${f.open === "1" ? "open " : ""}alerts. Every retrieved endpoint is clean.`}</div>
       ) : (
         <div className="table-wrap"><table>
           <thead><tr>

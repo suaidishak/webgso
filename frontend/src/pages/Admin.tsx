@@ -95,7 +95,7 @@ export function AdminSchedules() {
   const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   return (
     <>
-      <h2>Poll schedules</h2>
+      <h2>Retrieval schedule</h2>
       <p className="muted small">Pull times are data: changes take effect on the scheduler's next tick (within 30 s), no redeploy. Times are Malaysia time. Cron is minute hour day month weekday, for example <code>5 10-23 * * *</code> = 10:05, then hourly until 23:05.</p>
       {!rows ? <Skeleton rows={5} /> : (
         <div className="table-wrap"><table>

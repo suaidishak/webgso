@@ -206,10 +206,10 @@ def test_polling_switch_levels():
     ep.enabled = False
     assert off_reason(sw, p, ep) == "This endpoint is paused"
     p.polling_enabled = False
-    assert off_reason(sw, p, ep) == "Polling is paused for this plant"
+    assert off_reason(sw, p, ep) == "Retrieval is paused for this plant"
     p.status = "suspended"
     assert off_reason(sw, p, ep) == "Plant status is suspended"
     sw.types["mmf"] = False
     assert off_reason(sw, p, ep) == "MMF is paused for all plants"
     sw.fleet = False
-    assert off_reason(sw, p, ep) == "Fleet polling is paused"  # the highest level wins
+    assert off_reason(sw, p, ep) == "Fleet retrieval is paused"  # the highest level wins

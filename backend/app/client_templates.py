@@ -114,13 +114,17 @@ async def _plants(s: AsyncSession, cte: str, params: dict, category: str) -> lis
 
 
 async def forecast_template(s: AsyncSession, cte: str, params: dict, category: str, latest: bool,
-                            interval: int = 15) -> TSheet:
+                            interval: int = 15, submission_at: datetime | None = None) -> TSheet:
+    """submission_at puts every selected call under one submission time (a Retrieve now run, shown like a
+    scheduled submission)."""
     plants = await _plants(s, cte, params, category)
     polls = (await s.execute(text(
         f"{cte} SELECT sel.id, sel.plant_id, sel.started_at, "
         "COALESCE(sel.scheduled_for, date_trunc('minute', sel.started_at)) AS sub FROM sel "
         "WHERE sel.raw_response_id IS NOT NULL ORDER BY sub, sel.id"), params)).mappings().all()
-    if latest and polls:  # one submission: each plant's latest poll, shown under the newest time
+    if submission_at is not None:
+        polls = [{**p, "sub": submission_at} for p in polls]
+    elif latest and polls:  # one submission: each plant's latest poll, shown under the newest time
         newest = max(p["sub"] for p in polls)
         polls = [{**p, "sub": newest} for p in polls]
     chosen: dict[tuple[datetime, int], int] = {}  # (submission, plant) -> poll id; a re-poll replaces
@@ -204,7 +208,7 @@ async def mmf_template(s: AsyncSession, cte: str, params: dict, start: datetime 
     else:
         n = int((last - first) / step) + 1
         if n > MAX_HR:
-            raise ValueError(f"The MMF template allows at most {MAX_HR:,} interval columns; narrow the poll time "
+            raise ValueError(f"The MMF template allows at most {MAX_HR:,} interval columns; narrow the retrieval time "
                              "or use a longer interval.")
         hrs = [first + i * step for i in range(n)]
 

@@ -30,7 +30,7 @@ const STEPS: Step[] = [
     title: "Fleet board",
     route: "#/", target: [nav("#/")],
     body: w => <p>Your home page. It lists {w.isGso ? "every plant in the fleet" : "the plants assigned to your organisation"} with
-      the latest state of each API: Rolling, Day-ahead, Week-ahead, 4-months and MMF. Green means the last poll returned valid data.</p>,
+      the latest state of each API: Rolling, Day-ahead, Week-ahead, 4-months and MMF. Green means the last submission was valid.</p>,
   },
   {
     title: "Fleet at a glance",
@@ -42,13 +42,13 @@ const STEPS: Step[] = [
     title: "Find plants fast",
     route: "#/", target: ["main .board-tools", nav("#/")],
     body: w => <p>Search by plant, name or region, filter by API, region or status, and group the board by region.
-      Click a plant to open its page with forecast charts and recent polls, or click any status to see the <b>raw JSON</b> that poll returned, with problems highlighted.
-      {w.isAdmin && <> Tick plants to poll, pause or report on many at once.</>}</p>,
+      Click a plant to open its page with forecast charts and recent submissions, or click any status to see the <b>raw JSON</b> that submission contained, with problems highlighted.
+      {w.isAdmin && <> Tick plants to retrieve, pause or report on many at once.</>}</p>,
   },
   {
     title: "Alerts",
     route: "#/alerts", target: [nav("#/alerts")],
-    body: w => <p>The alert log records every problem the poller found: a plant not answering, a late submission or data breaking a rule.
+    body: w => <p>The alert log records every problem GSO found while retrieving: a plant not answering, a late submission or data breaking a rule.
       Filter by plant, region, API or rule. {w.isGso ? "GSO staff can acknowledge alerts once they are being handled." : "Alerts clear on their own once the plant sends valid data again."}</p>,
   },
   {
@@ -62,18 +62,18 @@ const STEPS: Step[] = [
     route: "#/reports", target: [nav("#/reports")],
     body: () => <p>Opens on the <b>client templates</b>: forecasts in the DDQ layout with one column per LSS, and MMF with one sheet per
       parameter (each station or the average, at 5, 15 or 60 minutes; missing readings show as highlighted 0s). View them online or
-      <b> Download Excel</b>. <b>Table view</b> has every polled point as a filterable table with CSV download.</p>,
+      <b> Download Excel</b>. <b>Table view</b> has every submitted point as a filterable table with CSV download.</p>,
   },
   {
-    title: "Poll now",
+    title: "Retrieve now",
     admin: true, route: "#/admin/poll", target: [nav("#/admin/poll")],
     body: () => <p>Fetch data from plants right away instead of waiting for the schedule. Choose one plant, several or the whole fleet,
-      and one API or all. Every run is saved with its own link, and each result opens the <b>raw JSON viewer</b> so you can see exactly what the plant sent.</p>,
+      and one API or all. Each result opens the <b>raw JSON viewer</b> so you can see exactly what the plant sent. Under <b>Recent runs</b>, click a time to open that run's data in Reports, laid out like a scheduled submission.</p>,
   },
   {
     title: "Plants",
     admin: true, route: "#/admin/plants", target: [nav("#/admin/plants")],
-    body: () => <p>Add and edit plants and their API addresses and keys. Use the switches to pause polling for the fleet, an API type or a single plant,
+    body: () => <p>Add and edit plants and their API addresses and keys. Use the switches to pause retrieval for the fleet, an API type or a single plant,
       <b> Test</b> to check a plant's endpoints without saving data, and <b>Import plants</b> to load many from a file.</p>,
   },
   {
@@ -84,7 +84,7 @@ const STEPS: Step[] = [
   {
     title: "Schedules",
     admin: true, route: "#/admin/schedules", target: [nav("#/admin/schedules")],
-    body: () => <p>When each API is polled and when submissions are due. Change the interval or cron timing, retries and timeouts per API.</p>,
+    body: () => <p>When each API is retrieved and when submissions are due. Change the interval or cron timing, retries and timeouts per API.</p>,
   },
   {
     title: "Audit",

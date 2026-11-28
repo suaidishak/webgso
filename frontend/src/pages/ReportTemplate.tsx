@@ -97,7 +97,7 @@ export default function ReportTemplate({ query: baseQuery, category, fileHint }:
               {sh.replaced_total.toLocaleString()} cell(s) had no reading and show 0 (see Anomaly Report)</span>}
             {sh.note && <b className="bad">{sh.note}</b>}</div>
           {sh.records === 0 ? (
-            <div className="card empty"><p className="muted">No polled data matches these filters. Try a wider poll time or more plants.</p></div>
+            <div className="card empty"><p className="muted">No submissions match these filters. Try a wider retrieval time or more plants.</p></div>
           ) : (
             <Sheet columns={sh.columns} rows={sh.rows} offset={offset} storageKey={`tpl:${d!.category}:${sh.name}`}
               loading={loading} frozen={sh.freeze_cols}

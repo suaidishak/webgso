@@ -670,7 +670,7 @@ async def poll_now_scope(body: PollNowIn, admin: AppUser = Depends(require_admin
     if not targets:
         raise HTTPException(400, "No matching endpoint")
     if len(targets) > cfg.poll_now_max_endpoints:
-        raise HTTPException(400, f"Too many endpoints for one ad-hoc poll ({len(targets)}; the limit is "
+        raise HTTPException(400, f"Too many endpoints for one Retrieve now run ({len(targets)}; the limit is "
                                  f"{cfg.poll_now_max_endpoints}). Choose fewer plants or one API.")
     scope = sorted(p.mnemonic for p in plants) if body.plants or body.region else None
     run = PollRun(started_at=now_local(), user_id=admin.id, plants=scope, category=body.category,
@@ -710,7 +710,7 @@ async def list_poll_runs(limit: int = 20, offset: int = 0, admin: AppUser = Depe
 async def get_poll_run(run_id: int, admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
     r = await s.get(PollRun, run_id)
     if r is None:
-        raise HTTPException(404, "Poll run not found")
+        raise HTTPException(404, "Retrieve now run not found")
     return await _run_out(s, r, full=True)
 
 

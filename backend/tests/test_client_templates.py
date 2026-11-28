@@ -27,3 +27,19 @@ def test_xlsx_layout_matches_client_template():
     assert [c.value for c in ws[6]] == ["Submission Date & Time", "Year", "Month", "Day", "Period", "BDWS", "SIDS"]
     assert ws["F6"].fill.fgColor.rgb == "FF0875C9" and ws.freeze_panes == "F7"
     assert [c.value for c in ws[7]] == ["25/11/2026 00:00:00", 2026, 11, 26, 1, 0, None]
+
+
+def test_intervals():
+    from app.client_templates import floor_to
+    t = datetime(2026, 11, 26, 13, 47, 12)
+    assert floor_to(t, 5) == datetime(2026, 11, 26, 13, 45) and floor_to(t, 60) == datetime(2026, 11, 26, 13, 0)
+    assert period_of(datetime(2026, 11, 26, 23, 0), 60) == 24 and period_of(datetime(2026, 11, 26, 0, 5), 5) == 2
+
+
+def test_replaced_cells_are_highlighted():
+    sh = TSheet(name="AirPressure", title="AIRPRESSURE", info_headers=["Parameter"], info_values=["AirPressure"],
+                generated="Generated", columns=[TCol("LSS", "text"), TCol("MMF", "text"), TCol("HR1"), TCol("HR2")],
+                rows=[["BDWS", "Average", 1008.5, 0]], freeze_cols=2, replaced={(0, 3)})
+    ws = load_workbook(io.BytesIO(to_xlsx([sh])))["AirPressure"]
+    assert ws["D7"].value == 0 and ws["D7"].fill.fgColor.rgb == "FFFFE08A"
+    assert ws["C7"].fill.fill_type is None and ws["B7"].value == "Average"

@@ -214,7 +214,7 @@ export default function Reports({ query }: { query: string }) {
         )}
       </div>
 
-      {isTpl ? <ReportTemplate query={tplQuery} fileHint="report.xlsx" /> : <>
+      {isTpl ? <ReportTemplate query={tplQuery} category={tplCat} fileHint="report.xlsx" /> : <>
       <div className="report-bar">
         <div className="tabs" role="tablist" aria-label="Report view">
           {VIEWS.map(v => <button key={v.id} role="tab" aria-selected={v.id === f.view} className={v.id === f.view ? "on" : ""}

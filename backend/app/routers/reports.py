@@ -390,46 +390,57 @@ async def export_csv(f: Filters = Depends(filters), user: AppUser = Depends(curr
 
 
 # ---------------------------------------------------------------- client templates
-async def _template_sheets(f: Filters, user: AppUser, s: AsyncSession) -> tuple[str, list[ct.TSheet]]:
+async def _template_sheets(f: Filters, user: AppUser, s: AsyncSession, interval: int | None,
+                           source: str) -> tuple[str, list[ct.TSheet]]:
     """The client's template for the chosen API: the DDQ layout for a forecast API, the MMF workbook for MMF."""
     category = f.categories[0] if len(f.categories) == 1 else "dayahead"
     if category == "mmf":
         tf = Filters(**{**f.__dict__, "view": "mmf", "categories": ["mmf"]})
         cte, params = await _selection(tf, user, s)
         try:
-            return category, await ct.mmf_template(s, cte, params, f.start, f.end, not f.plants)
+            iv = interval or 15
+            if iv not in ct.MMF_INTERVALS:
+                raise HTTPException(400, "MMF interval must be 5, 15 or 60 minutes")
+            return category, await ct.mmf_template(s, cte, params, f.start, f.end, not f.plants, iv,
+                                                   "average" if source == "average" else "station")
         except ValueError as e:
             raise HTTPException(400, str(e))
     tf = Filters(**{**f.__dict__, "view": "points", "categories": [category], "latest": f.latest})
     cte, params = await _selection(tf, user, s)
-    return category, [await ct.forecast_template(s, cte, params, category, f.latest)]
+    iv = interval or 15
+    if iv not in ct.FORECAST_INTERVALS:
+        raise HTTPException(400, "Forecast interval must be 15 or 60 minutes")
+    return category, [await ct.forecast_template(s, cte, params, category, f.latest, iv)]
 
 
 def _sheet_out(sh: ct.TSheet, offset: int = 0, limit: int | None = None) -> dict:
     keys = [f"c{i}" for i in range(len(sh.columns))]
     rows = sh.rows[offset:offset + limit] if limit else sh.rows
+    stop = offset + len(rows)
+    replaced = [[r - offset, c] for r, c in sorted(sh.replaced) if offset <= r < stop]
     return {"name": sh.name, "title": sh.title, "info_headers": sh.info_headers, "info_values": sh.info_values,
             "generated": sh.generated, "records": sh.records, "freeze_cols": sh.freeze_cols, "note": sh.note,
             "columns": [{"key": k, "label": c.label, "type": c.type, "hint": c.hint} for k, c in zip(keys, sh.columns)],
-            "rows": [dict(zip(keys, r)) for r in rows]}
+            "rows": [dict(zip(keys, r)) for r in rows], "replaced": replaced,
+            "replaced_total": len(sh.replaced)}
 
 
 @router.get("/template")
 async def template(f: Filters = Depends(filters), sheet: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=2000),
-                   offset: int = Query(0, ge=0), user: AppUser = Depends(current_user),
-                   s: AsyncSession = Depends(get_session)):
+                   offset: int = Query(0, ge=0), interval: int | None = None, source: str = "station",
+                   user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
     """One sheet of the client's template, one page of its rows, plus the list of sheets (workbook tabs)."""
-    category, sheets = await _template_sheets(f, user, s)
+    category, sheets = await _template_sheets(f, user, s, interval, source)
     sh = sheets[min(sheet, len(sheets) - 1)]
     return {"category": category, "sheets": [{"name": x.name, "records": x.records} for x in sheets],
             "sheet": _sheet_out(sh, offset, limit), "total": sh.records}
 
 
 @router.get("/template.xlsx")
-async def template_xlsx(f: Filters = Depends(filters), user: AppUser = Depends(current_user),
-                        s: AsyncSession = Depends(get_session)):
+async def template_xlsx(f: Filters = Depends(filters), interval: int | None = None, source: str = "station",
+                        user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
     """The client's template as an Excel workbook (the spreadsheet download)."""
-    category, sheets = await _template_sheets(f, user, s)
+    category, sheets = await _template_sheets(f, user, s, interval, source)
     if category == "mmf":
         first = f.start.strftime("%Y%m%d-%H%M") if f.start else now_local().strftime("%Y%m%d-%H%M")
         name = f"LSS-MMF-Data-{first}.xlsx"

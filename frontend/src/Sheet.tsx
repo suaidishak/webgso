@@ -44,11 +44,12 @@ function copyText(text: string) {
 
 const fmtNum = (n: number) => (Math.abs(n) >= 1e6 || Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined, { maximumFractionDigits: 4 }));
 
-export default function Sheet({ columns, rows, offset, storageKey, sort = null, onSort, filters = {}, onFilter, loading, display, footer, cellLink, frozen = 1, freezeLabel }: {
+export default function Sheet({ columns, rows, offset, storageKey, sort = null, onSort, filters = {}, onFilter, loading, display, footer, cellLink, frozen = 1, freezeLabel, cellClass }: {
   columns: SheetCol[]; rows: Record<string, any>[]; offset: number; storageKey: string;
   sort?: { key: string; desc: boolean } | null; onSort?: (key: string) => void;
   filters?: Record<string, string>; onFilter?: (key: string, value: string) => void;
   frozen?: number; freezeLabel?: string;
+  cellClass?: (row: number, col: number) => string;
   loading?: boolean; display?: (col: SheetCol, v: any) => string; footer?: ReactNode;
   cellLink?: (row: Record<string, any>, col: SheetCol) => { href: string; label: string } | null;
 }) {
@@ -234,7 +235,7 @@ export default function Sheet({ columns, rows, offset, storageKey, sort = null, 
                   const v = r[c.key];
                   const isActive = active && active.r === ri && active.c === ci;
                   const cls = [NUMERIC.has(c.type) ? "num" : "", inSel(ri, ci) ? "sel" : "", isActive ? "act" : "",
-                    frz(ci), c.type === "bool" ? (v ? "yes" : v === false ? "no" : "") : "",
+                    frz(ci), cellClass ? cellClass(ri, ci) : "", c.type === "bool" ? (v ? "yes" : v === false ? "no" : "") : "",
                     v === null || v === undefined || v === "" ? "empty" : ""].join(" ");
                   return (
                     <td key={c.key} data-rc={`${ri}:${ci}`} className={cls} style={fst(ci)}

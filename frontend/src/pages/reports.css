@@ -23,3 +23,11 @@
 .tpl-tabs button:hover { background: var(--hover); color: var(--text); filter: none; }
 .tpl-tabs button.on { background: var(--panel); color: var(--tpl-green); border-top-color: var(--tpl-green); font-weight: 650; }
 :root:not([data-theme="light"]) .tpl-tabs button.on { color: #7fd4a1; border-top-color: #7fd4a1; }
+.tpl-opts { align-items: flex-end; margin-bottom: 10px; }
+.tpl-opts .field { margin: 0; min-width: 150px; }
+.tpl-opts .tabs.seg { margin: 0; }
+/* zero-filled cells: no reading was received, the value shown is a replacement 0 */
+.xl td.repl, .xl td.repl.sel { background: #ffe08a; color: #9c2a00; font-weight: 700; }
+:root:not([data-theme="light"]) .xl td.repl { background: color-mix(in srgb, #f5b100 32%, var(--panel)); color: #ffd27a; }
+.tpl-key { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.tpl-swatch { width: 14px; height: 14px; border-radius: 3px; background: #ffe08a; border: 1px solid #d9a400; display: inline-block; }

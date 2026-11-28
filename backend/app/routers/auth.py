@@ -22,6 +22,10 @@ class RegisterIn(BaseModel):
     company_type: str = Field(pattern="^(GSO|LSS)$")
 
 
+class TourIn(BaseModel):
+    show: bool
+
+
 class LoginIn(BaseModel):
     email: str = Field(max_length=320)
     password: str
@@ -32,7 +36,7 @@ def user_out(u: AppUser, plants: list[str] | None = None) -> dict:
             "organisation": u.organisation.name if u.organisation else None,
             "organisation_type": u.organisation.type if u.organisation else None,
             "created_at": u.created_at, "approved_at": u.approved_at, "last_login_at": u.last_login_at,
-            "plants": plants}
+            "plants": plants, "show_tour": u.show_tour is not False}
 
 
 @router.post("/register", status_code=201)
@@ -82,3 +86,12 @@ async def me(user: AppUser = Depends(current_user), s: AsyncSession = Depends(ge
     ids = await visible_plant_ids(user, s)
     plants = (await s.execute(select(Plant.mnemonic).where(Plant.id.in_(ids)).order_by(Plant.mnemonic))).scalars().all()
     return user_out(user, list(plants))
+
+
+@router.put("/me/tour")
+async def set_tour(body: TourIn, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
+    """Save whether the guided tour opens at login. Stored per user so it follows them across browsers."""
+    u = await s.get(AppUser, user.id)
+    u.show_tour = body.show
+    await s.commit()
+    return {"show_tour": u.show_tour}

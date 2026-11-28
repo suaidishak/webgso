@@ -30,7 +30,7 @@ function AuthShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function Login({ onLogin }: { onLogin: () => void }) {
+export function Login({ onLogin, notice = "" }: { onLogin: () => void; notice?: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -39,7 +39,10 @@ export function Login({ onLogin }: { onLogin: () => void }) {
     e.preventDefault(); setErr(""); setBusy(true);
     try {
       const r = await api<{ token: string }>("/auth/login", { method: "POST", body: { email, password } });
-      setToken(r.token); location.hash = "#/"; onLogin();
+      setToken(r.token);
+      // Back to the page the user was on when the session ended (not the login or register page).
+      if (/^#\/(login|register)?$/.test(location.hash) || !location.hash) location.hash = "#/";
+      onLogin();
     } catch (x: any) { setErr(x.message); }
     setBusy(false);
   };
@@ -47,6 +50,7 @@ export function Login({ onLogin }: { onLogin: () => void }) {
     <AuthShell>
       <form className="auth-form" onSubmit={submit}>
         <div><h1>Sign in</h1><p className="muted">Use your work account for the GSO Solar Data Platform.</p></div>
+        {notice && !err && <div className="notice-box" role="status">{notice}</div>}
         <label>Email<input type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} required autoFocus /></label>
         <label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
         {err && <div className="error" role="alert">{err}</div>}

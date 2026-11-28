@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, canOperate, setToken, getToken, ROLE_LABEL, User } from "./api";
+import { api, canOperate, setToken, getToken, ROLE_LABEL, SESSION_ENDED, User } from "./api";
 import { Login, Register } from "./pages/Auth";
 import Fleet from "./pages/Fleet";
 import PlantPage from "./pages/Plant";
@@ -58,6 +58,21 @@ export default function App() {
   }, []);
   useEffect(() => { loadMe(); }, [loadMe]);
 
+  // Session ended (401) or the sign-in changed in another tab (log out, or log in as someone else):
+  // follow it here too, instead of leaving a page that fails with "Not logged in".
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    const ended = () => { setUser(null); setNotice("Your session ended. Sign in again to carry on."); };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== "gso_token" && e.key !== null) return;
+      if (getToken()) loadMe();
+      else { setUser(null); setNotice("You were signed out in another tab. Sign in again to carry on."); }
+    };
+    addEventListener(SESSION_ENDED, ended);
+    addEventListener("storage", onStorage);
+    return () => { removeEventListener(SESSION_ENDED, ended); removeEventListener("storage", onStorage); };
+  }, [loadMe]);
+
   // Guided tour: opens once per login (a new token) while the user's "show at login" setting is on.
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => {
@@ -81,7 +96,8 @@ export default function App() {
 
   if (!loaded) return null;
   if (!user) {
-    return route.startsWith("/register") ? <Register /> : <Login onLogin={loadMe} />;
+    return route.startsWith("/register") ? <Register />
+      : <Login notice={notice} onLogin={() => { setNotice(""); loadMe(); }} />;
   }
   // isAdmin: runs the platform (super admin and GSO). Only the super admin manages users.
   const isAdmin = canOperate(user);
@@ -144,7 +160,7 @@ export default function App() {
           <button className="ghost theme-btn" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             title={theme === "dark" ? "Light theme" : "Dark theme"}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
           <HelpMenu showAtLogin={user.show_tour !== false} onTour={() => setTourOpen(true)} onToggleLogin={saveTourPref} />
-          <button className="ghost" onClick={() => { setTourOpen(false); setToken(null); setUser(null); location.hash = "#/login"; }}><Icon name="logout" />Log out</button>
+          <button className="ghost" onClick={() => { setTourOpen(false); setToken(null); setUser(null); setNotice(""); location.hash = "#/login"; }}><Icon name="logout" />Log out</button>
         </div>
       </header>
       <main id="main" ref={mainRef} tabIndex={-1}>{body}</main>

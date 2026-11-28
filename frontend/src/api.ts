@@ -10,6 +10,7 @@ export const ROLE_LABEL: Record<string, string> = { super_admin: "Super admin", 
 export const canOperate = (u: User | null) => u?.role === "super_admin" || u?.role === "gso";
 
 const KEY = "gso_token";
+export const SESSION_ENDED = "gso:session-ended";
 export const getToken = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
 export const setToken = (t: string | null) => {
   try { t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY); } catch { /* ignore */ }
@@ -24,7 +25,12 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   const res = await fetch(`/api/v1${path}`, {
     method: opts.method || "GET", headers, body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  if (res.status === 401 && t) { setToken(null); location.hash = "#/login"; }
+  // The session is gone (expired, disabled, or logged out in another tab): drop it and let the app show
+  // the sign-in screen, which returns to this page afterwards. Wrong-password logins are not affected.
+  if (res.status === 401 && !path.startsWith("/auth/login")) {
+    setToken(null);
+    window.dispatchEvent(new Event(SESSION_ENDED));
+  }
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : null;
   if (!res.ok) {
     const d = data?.detail;

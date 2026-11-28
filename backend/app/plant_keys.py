@@ -51,7 +51,9 @@ def auth_parts(method: str | None, name: str | None, key: str | None) -> tuple[d
         return {name or "X-API-Key": key}, {}
     if method == "query":
         return {}, {name or "apiKey": key}
-    return {}, {}
+    if method == "basic":
+        return {"Authorization": "Basic " + base64.b64encode(f"{name or ''}:{key}".encode()).decode()}, {}
+    return {}, {}  # wsse goes inside the SOAP envelope (see soap.py)
 
 
 def scrub(text: str | None, key: str | None) -> str | None:

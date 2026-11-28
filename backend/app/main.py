@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -9,6 +10,7 @@ from .config import get_settings, now_local
 from .db import engine
 from .routers import admin, auth, data, emails, reports
 from .seed import init_db
+from .simulated import autoload
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # httpx logs full request URLs at INFO, which would leak plant API keys sent as query parameters.
@@ -23,7 +25,9 @@ async def lifespan(app: FastAPI):
         await c.execute(text("UPDATE poll_run SET status = 'failed', finished_at = now() AT TIME ZONE :tz, "
                              "summary = summary || '{\"error\": \"Interrupted by an API restart\"}'::jsonb "
                              "WHERE status = 'running'"), {"tz": get_settings().timezone})
+    sim = asyncio.create_task(autoload())  # adds the simulator's plants when mockplants is running
     yield
+    sim.cancel()
 
 
 app = FastAPI(title="GSO Solar Data Platform (beta)", version="0.1.0", lifespan=lifespan,

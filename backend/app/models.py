@@ -109,11 +109,15 @@ class Plant(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     # Outbound auth to the plant's web service. The key is encrypted at rest (see secrets.py)
     # and never returned by the API; only its last 4 characters are shown to admins.
-    auth_method: Mapped[str] = mapped_column(String(10), default="none")  # none | header | query
+    auth_method: Mapped[str] = mapped_column(String(10), default="none")  # none | header | query | basic | wsse
+    # Header or query parameter name (header/query), or the username (basic, wsse = WS-Security UsernameToken).
     auth_param_name: Mapped[str | None] = mapped_column(String(100))  # e.g. X-API-Key or apiKey
     api_key_enc: Mapped[str | None] = mapped_column(Text)
     api_key_hint: Mapped[str | None] = mapped_column(String(8))
     polling_enabled: Mapped[bool] = mapped_column(Boolean, default=True)  # plant-level polling switch
+    # A fictitious plant served by the mockplants simulator (demo/testing). Shown with a SIM badge, hidden
+    # from the fleet board by default and left out of report emails unless a recipient list allows it.
+    is_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime)
 
@@ -132,6 +136,12 @@ class PlantEndpoint(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Known issue acknowledged by GSO (e.g. MALS/LMMS MMF): polled = False when enabled is off.
     note: Mapped[str | None] = mapped_column(Text)
+    # rest = GET the URL, JSON reply. soap = POST an envelope to the URL, XML reply (see soap.py).
+    protocol: Mapped[str] = mapped_column(String(4), default="rest")
+    soap_operation: Mapped[str | None] = mapped_column(String(120))
+    soap_action: Mapped[str | None] = mapped_column(String(300))
+    soap_version: Mapped[str | None] = mapped_column(String(3))  # 1.1 | 1.2
+    soap_namespace: Mapped[str | None] = mapped_column(String(300))
 
     plant: Mapped[Plant] = relationship(back_populates="endpoints")
 
@@ -237,6 +247,8 @@ class RawResponse(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     body: Mapped[dict | list | None] = mapped_column(JSONB)  # parsed JSON when valid (queryable)
     body_text: Mapped[str | None] = mapped_column(Text)  # the response exactly as received
+    # json, or xml for SOAP replies (body then holds the payload converted to the rev5 JSON shape).
+    body_format: Mapped[str] = mapped_column(String(4), default="json")
 
 
 class ForecastSnapshot(Base):
@@ -341,6 +353,8 @@ class RecipientList(Base):
     forecast_interval: Mapped[int] = mapped_column(Integer, default=15)  # 15 | 60
     mmf_interval: Mapped[int] = mapped_column(Integer, default=15)  # 5 | 15 | 60
     mmf_source: Mapped[str] = mapped_column(String(10), default="station")  # station | average
+    # Include simulated (fictitious) plants in this list's reports. Off by default.
+    include_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime | None] = mapped_column(DateTime)

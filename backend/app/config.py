@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Offline demo: when > 0 and the database has no plants, seed this many simulated plants
     # (spread over regions) instead of the 8 pilots. Use with SEED_BASE_URL pointing at mockplants.
     seed_mock_fleet: int = 0
+    # The plant simulator (mockplants). When set, its fictitious SOAP and REST plants are added on start
+    # (see simulated.py). docker compose sets it to http://mockplants:9000; it only answers with --profile mock.
+    sim_base_url: str = ""
     # Report emails after scheduled retrievals. Empty SMTP_HOST = email off (emails are logged as failed).
     # Local docker compose points this at Mailpit (http://localhost:8025), which catches every email.
     smtp_host: str = ""

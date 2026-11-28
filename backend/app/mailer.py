@@ -127,7 +127,7 @@ class CatSummary:
 async def batch_runs(s, schedule_id: int, due_at: datetime) -> list[dict]:
     """Every pull in one scheduled retrieval, with its result."""
     return [dict(r) for r in (await s.execute(text("""
-        SELECT r.plant_id, p.mnemonic, r.category, r.status, r.poll_attempt_id AS attempt_id,
+        SELECT r.plant_id, p.mnemonic, p.is_simulated, r.category, r.status, r.poll_attempt_id AS attempt_id,
                a.is_valid, a.http_status, a.error, a.major_flags, a.minor_flags, a.raw_response_id, a.started_at,
                (SELECT f.message FROM compliance_flag f WHERE f.poll_attempt_id = a.id AND f.severity = 'major'
                 ORDER BY f.id LIMIT 1) AS first_major
@@ -275,6 +275,8 @@ async def prepare(s, e: ReportEmail) -> EmailMessage | None:
     if rl is None:
         raise RuntimeError("The recipient list was deleted")
     runs = await batch_runs(s, e.schedule_id, e.due_at) if e.schedule_id else []
+    if not rl.include_simulated:  # fictitious simulator plants never reach real recipients by default
+        runs = [r for r in runs if not r["is_simulated"]]
     cats = wanted_categories(rl, runs)
     if not cats:
         return None

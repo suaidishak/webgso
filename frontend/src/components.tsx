@@ -5,7 +5,7 @@ import Icon from "./Icon";
 /* Building blocks for a fleet of hundreds of plants: a cached plant index, a searchable multi-select
    plant picker (with region shortcuts), a pager for server-paged lists and a bulk-action bar. */
 
-export type PlantBrief = { mnemonic: string; name: string; region: string | null; status: string };
+export type PlantBrief = { mnemonic: string; name: string; region: string | null; status: string; is_simulated?: boolean };
 export const NO_REGION = "No region";
 
 let cache: Promise<PlantBrief[]> | null = null;
@@ -136,7 +136,7 @@ export function PlantPicker({ value, onChange, allLabel = "Whole fleet", single 
                 <label className={sel.has(p.mnemonic) ? "on" : ""}>
                   <input type={single ? "radio" : "checkbox"} checked={sel.has(p.mnemonic)} onChange={() => toggle(p.mnemonic)} />
                   <span className="mnem">{p.mnemonic.toUpperCase()}</span>
-                  <span className="picker-name">{p.name.toLowerCase() !== p.mnemonic ? p.name : ""}</span>
+                  <span className="picker-name">{p.name.toLowerCase() !== p.mnemonic ? p.name : ""}{p.is_simulated && <span className="badge sim">SIM</span>}</span>
                   <span className="muted small">{p.region || ""}{p.status !== "live" ? ` · ${p.status}` : ""}</span>
                 </label>
               </li>

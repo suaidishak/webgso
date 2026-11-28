@@ -631,3 +631,13 @@ table.recipients td, table.email-log td { vertical-align: top; }
 table.email-log tr.open td { background: var(--hover); }
 table.email-log tr.detail-row td { background: var(--hover); padding-top: 4px; display: table-cell; }
 table.email-log tr.detail-row td > div { margin: 3px 0; }
+
+/* SOAP and simulated plants */
+.badge.proto { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+.badge.sim { background: color-mix(in srgb, #8b5cf6 15%, transparent); color: #c4b5fd; border: 1px solid color-mix(in srgb, #8b5cf6 45%, transparent); font-size: 10.5px; padding: 0 6px; margin-left: 6px; vertical-align: middle; }
+:root[data-theme="light"] .badge.sim { color: #6d28d9; }
+.seg-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 8px; }
+.seg-row .tabs { margin: 0; }
+.soap-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px 10px; margin-top: 6px; }
+.soap-fields .field { margin: 0; }
+.sim-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

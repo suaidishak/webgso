@@ -72,13 +72,19 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
     on(); addEventListener("resize", on); return () => removeEventListener("resize", on);
   }, [d]);
 
+  // SOAP replies: "received" shows the XML as sent (lines come from the server, each tagged with the JSON
+  // Pointer it was converted to, so findings highlight the XML element); "converted" shows that JSON.
+  const isXml = d?.raw?.format === "xml";
+  const [view, setView] = useState<"received" | "converted">("received");
   // Prefer the exact text the plant sent (keeps its key order); fall back to the stored JSONB.
   const parsed = useMemo(() => {
     if (!d?.raw) return null;
+    if (isXml) return view === "converted" ? d.raw.converted ?? d.raw.body ?? null : d.raw.xml_lines ?? null;
     if (d.raw.body_text) { try { return JSON.parse(d.raw.body_text); } catch { return null; } }
     return d.raw.body ?? null;
-  }, [d]);
-  const lines = useMemo(() => (parsed != null ? flatten(parsed) : []), [parsed]);
+  }, [d, isXml, view]);
+  const lines = useMemo(() => (parsed == null ? [] : isXml && view === "received" ? parsed as Line[] : flatten(parsed)),
+    [parsed, isXml, view]);
   const flags: Flag[] = d?.flags || [];
 
   // path -> first line index (opening lines and value parts)
@@ -132,7 +138,7 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
   const last = Math.min(lines.length, Math.ceil((scrollTop + height) / ROW) + 30);
   const visible = lines.slice(first, last);
   const majors = flags.filter(f => f.severity === "major").length;
-  const status = a.http_status !== 200 ? "down" : a.is_valid ? (a.minor_flags ? "minor" : "ok") : "invalid";
+  const status = a.http_status !== 200 && !d.raw ? "down" : a.is_valid ? (a.minor_flags ? "minor" : "ok") : "invalid";
   const STATUS = { ok: "Compliant", minor: "Minor issues", invalid: "Non-compliant", down: "Unreachable" } as Record<string, string>;
 
   return (
@@ -159,14 +165,23 @@ export default function Inspect({ id, embedded = false, canPoll = false }: { id:
         <p className="muted small">The plant sent exactly the same content as in an earlier submission (first received {fmt(d.raw.received_at)}), so that stored copy is shown.</p>
       )}
 
+      {isXml && <div className="seg-row">
+        <span className="badge proto">SOAP</span>
+        <div className="tabs" role="tablist" aria-label="Response view">
+          <button role="tab" aria-selected={view === "received"} className={view === "received" ? "on" : ""} onClick={() => setView("received")}>Received XML</button>
+          <button role="tab" aria-selected={view === "converted"} className={view === "converted" ? "on" : ""} onClick={() => setView("converted")}>Converted</button>
+        </div>
+        <span className="muted small">{view === "received" ? "The XML exactly as the plant sent it, laid out one element per line." : d.raw.body ? "What the platform read from the XML. Checks, reports and templates use this." : "Nothing could be read from this reply."}</span>
+      </div>}
       <div className={`inspect${embedded ? " embedded" : ""}`}>
         <div className="json-pane">
           {!d.raw ? (
             <div className="card"><b>No response body stored.</b><p className="muted">{a.error || `HTTP ${a.http_status}`}</p></div>
           ) : parsed == null ? (
-            <pre className="json-text hl major">{d.raw.body_text}</pre>
+            isXml && view === "converted" ? <div className="card"><b>Nothing converted.</b><p className="muted">The reply was a SOAP Fault or could not be read, so there is no data to show here. See Received XML.</p></div>
+              : <pre className="json-text hl major">{d.raw.body_text}</pre>
           ) : (
-            <div className="json" ref={box} tabIndex={0} role="region" aria-label="Raw JSON response" onScroll={e => setScrollTop(e.currentTarget.scrollTop)}>
+            <div className="json" ref={box} tabIndex={0} role="region" aria-label={isXml ? "Raw XML response" : "Raw JSON response"} onScroll={e => setScrollTop(e.currentTarget.scrollTop)}>
               <div style={{ height: lines.length * ROW, position: "relative" }}>
                 {visible.map((l, k) => {
                   const i = first + k;

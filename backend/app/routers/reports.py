@@ -33,7 +33,8 @@ from ..config import now_local
 from ..colfilter import py_match, sql_condition
 from .. import client_templates as ct
 from ..db import SessionLocal, get_session
-from ..flatten import ROW_KEY, flatten_text
+from .. import soap
+from ..flatten import ROW_KEY, flatten, flatten_text
 from ..models import CATEGORIES, AppUser, Plant, PollRun
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -200,7 +201,7 @@ def _sql_parts(f: Filters, cte: str) -> tuple[str, str, dict]:
 
 
 async def _json_rows(f: Filters, cte: str, params: dict, s: AsyncSession) -> tuple[list[Col], list[dict], bool]:
-    polls = (await s.execute(text(f"{cte} SELECT sel.*, r.body_text FROM sel "
+    polls = (await s.execute(text(f"{cte} SELECT sel.*, r.body_text, r.body_format FROM sel "
                                   "LEFT JOIN raw_response r ON r.id = sel.raw_response_id "
                                   f"ORDER BY sel.plant, sel.category, sel.started_at, sel.id LIMIT {JSON_POLL_CAP + 1}"), params)).mappings().all()
     truncated = len(polls) > JSON_POLL_CAP
@@ -210,7 +211,11 @@ async def _json_rows(f: Filters, cte: str, params: dict, s: AsyncSession) -> tup
     for p in polls[:JSON_POLL_CAP]:
         rid = p["raw_response_id"]
         if rid not in cache:
-            cache[rid] = flatten_text(p["body_text"])[1] if rid else []
+            # SOAP replies flatten from the XML converted to the rev5 shape (re-read from the text, which
+            # keeps the element order; the stored JSONB does not), REST from the text as received.
+            xml = soap.convert(p["body_text"].encode(), None, None, None).body \
+                if rid and p["body_format"] == "xml" and p["body_text"] else None
+            cache[rid] = [] if not rid else flatten(xml)[1] if xml is not None else flatten_text(p["body_text"])[1]
         flat = cache[rid]
         base = {"plant": p["plant"], "api": p["category"], "polled_at": p["started_at"], "poll_id": p["id"],
                 "poll_valid": p["is_valid"]}

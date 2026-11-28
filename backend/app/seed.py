@@ -94,6 +94,17 @@ UPGRADES = [
     "WHERE kind = 'scheduled'",
     # Finding finished scheduled retrievals to email.
     "CREATE INDEX IF NOT EXISTS ix_run_sched_due ON schedule_run (schedule_id, due_at)",
+    # 28 Nov 2026: SOAP plant APIs and simulated (fictitious) plants.
+    "ALTER TABLE plant_endpoint ADD COLUMN IF NOT EXISTS protocol VARCHAR(4) NOT NULL DEFAULT 'rest'",
+    "ALTER TABLE plant_endpoint ADD COLUMN IF NOT EXISTS soap_operation VARCHAR(120)",
+    "ALTER TABLE plant_endpoint ADD COLUMN IF NOT EXISTS soap_action VARCHAR(300)",
+    "ALTER TABLE plant_endpoint ADD COLUMN IF NOT EXISTS soap_version VARCHAR(3)",
+    "ALTER TABLE plant_endpoint ADD COLUMN IF NOT EXISTS soap_namespace VARCHAR(300)",
+    "ALTER TABLE raw_response ADD COLUMN IF NOT EXISTS body_format VARCHAR(4) NOT NULL DEFAULT 'json'",
+    "ALTER TABLE plant ADD COLUMN IF NOT EXISTS is_simulated BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE recipient_list ADD COLUMN IF NOT EXISTS include_simulated BOOLEAN NOT NULL DEFAULT false",
+    # The SEED_MOCK_FLEET demo plants (nrt001, cen002 ..) are simulated too.
+    "UPDATE plant SET is_simulated = true WHERE NOT is_simulated AND mnemonic ~ '^(nrt|cen|sth|ecs)[0-9]{3}$'",
 ]
 
 
@@ -134,7 +145,7 @@ async def seed():
                 plants.append((f"{code}{n:03d}", f"{region} Solar {n}", region, float(40 + (i * 7) % 60)))
             for m, name, region, cap in plants:
                 p = Plant(mnemonic=m, name=name, region=region, capacity_mw=cap, status="live", auth_method="none",
-                          polling_enabled=True, created_at=now_local())
+                          polling_enabled=True, created_at=now_local(), is_simulated=region is not None)
                 for cat, path in FORECAST_PATHS.items():
                     p.endpoints.append(PlantEndpoint(category=cat, url=f"{base}/{m}/{path}"))
                 p.endpoints.append(PlantEndpoint(category="mmf", url=f"{base}/{m}/{MMF_PATH}", enabled=True))

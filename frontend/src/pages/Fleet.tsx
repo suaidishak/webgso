@@ -5,13 +5,14 @@ import { BulkBar, NO_REGION, PageCheck, Pager, useDebounced, useQueryState } fro
 
 type Cell = { state: string; attempt_id: number | null; off_reason: string | null; last_poll: string | null; http_status: number | null; latency_ms: number | null;
   major_flags: number; minor_flags: number; error: string | null; last_valid: string | null; open_alerts: number };
-type Row = { mnemonic: string; name: string; region: string | null; status: string; polling_enabled: boolean;
+type Row = { mnemonic: string; name: string; region: string | null; status: string; polling_enabled: boolean; is_simulated?: boolean; protocols?: string[];
   cells: Record<string, Cell>; open_alerts: number; problem_count: number; last_poll: string | null };
 type Group = { region: string | null; plants: number; problems: number; open_alerts: number };
 type Board = {
   generated_at: string; plants: Row[]; total: number; matched: number; counts: Record<string, number>; open_alerts: number;
   facets: Record<string, number>; regions: { region: string | null; plants: number; problems: number }[];
   groups: Group[]; mnemonics: string[]; polling?: { fleet: boolean; types: Record<string, boolean> };
+  sim_counts?: { real: number; simulated: number };
 };
 
 export const STATE_LABEL: Record<string, string> = {
@@ -31,7 +32,8 @@ const SORTS: [string, string][] = [
   ["problems", "Problems first"], ["alerts", "Most open alerts"], ["last_poll", "Stalest submission first"], ["mnemonic", "Mnemonic A–Z"],
   ["name", "Name A–Z"], ["region", "Region"], ["capacity", "Largest capacity"],
 ];
-const DEFAULTS = { q: "", state: "", api: "", region: "", status: "", sort: "problems", group: "", density: "detailed", size: "50", page: "0" };
+// sim: simulated (fictitious) plants are hidden unless asked for.
+const DEFAULTS = { q: "", state: "", api: "", region: "", status: "", sort: "problems", group: "", density: "detailed", size: "50", page: "0", sim: "real" };
 
 export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boolean; query?: string }) {
   const [f, set] = useQueryState("/", query, DEFAULTS);
@@ -57,6 +59,7 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
     if (f.region) p.set("region", f.region);
     if (f.status) p.set("status", f.status);
     if (f.group) p.set("group", f.group);
+    p.set("sim", f.sim || "real");
     const load = () => {
       setLoading(true);
       return api<Board>(`/fleet/status?${p}`).then(d => { if (alive) { setData(d); setErr(""); } })
@@ -65,7 +68,7 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
     load();
     const t = setInterval(load, 30000);
     return () => { alive = false; clearInterval(t); };
-  }, [q, f.state, f.api, f.region, f.status, f.sort, f.group, size, offset, tick]);
+  }, [q, f.state, f.api, f.region, f.status, f.sort, f.group, f.sim, size, offset, tick]);
 
   if (!data) return err ? <div className="error" role="alert">{err}</div> : <Skeleton tiles rows={8} />;
   const counts = data.counts;
@@ -132,6 +135,14 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
             <select value={f.status} onChange={e => setFilter({ status: e.target.value })}>
               <option value="">Any</option><option value="live">Live</option><option value="onboarding">Onboarding</option><option value="suspended">Suspended</option>
             </select></label>
+          {!!data.sim_counts?.simulated && (
+            <label className="field inline-field"><span>Plants</span>
+              <select value={f.sim} onChange={e => setFilter({ sim: e.target.value })}>
+                <option value="real">Real ({data.sim_counts.real})</option>
+                <option value="simulated">Simulated ({data.sim_counts.simulated})</option>
+                <option value="all">Real and simulated</option>
+              </select></label>
+          )}
           <label className="field inline-field"><span>Sort</span>
             <select value={f.sort} onChange={e => setFilter({ sort: e.target.value })}>
               {SORTS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -150,7 +161,7 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
               <span className="chip-n">{data.facets[k || "all"] ?? 0}</span>
             </label>
           ))}
-          {filtered && <button className="ghost small-btn" onClick={() => set({ ...DEFAULTS, sort: f.sort, group: f.group, density: f.density, size: f.size })}><Icon name="x" size={12} />Clear filters</button>}
+          {filtered && <button className="ghost small-btn" onClick={() => set({ ...DEFAULTS, sort: f.sort, group: f.group, density: f.density, size: f.size, sim: f.sim })}><Icon name="x" size={12} />Clear filters</button>}
         </div>
       </div>
 
@@ -158,6 +169,8 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
         <span className="small muted" role="status">
           {data.matched === data.total ? `${data.total} plants` : `${data.matched} of ${data.total} plants match`}
           {f.api ? ` · states shown for ${CAT_LABEL[f.api]}` : ""}
+          {f.sim === "real" && !!data.sim_counts?.simulated && <> · {data.sim_counts.simulated} simulated plants hidden <button className="ghost small-btn" onClick={() => setFilter({ sim: "all" })}>Show them</button></>}
+          {f.sim === "simulated" && <> · showing simulated (fictitious) plants only</>}
         </span>
         <Legend />
       </div>
@@ -174,7 +187,8 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
       {note && <div className="okline card small" role="status">{note}</div>}
 
       {!data.plants.length ? (
-        <div className="card empty"><p className="muted">{filtered ? "No plants match these filters." : "No plants yet."}</p>
+        <div className="card empty"><p className="muted">{filtered ? "No plants match these filters." : f.sim === "real" && data.sim_counts?.simulated ? "No real plants yet. Simulated plants are hidden." : "No plants yet."}</p>
+          {!filtered && f.sim === "real" && !!data.sim_counts?.simulated && <button className="ghost" onClick={() => setFilter({ sim: "all" })}>Show simulated plants</button>}
           {filtered && <button className="ghost" onClick={() => set({ ...DEFAULTS, sort: f.sort, density: f.density })}>Clear filters</button>}</div>
       ) : (
         <div className="table-wrap">
@@ -214,6 +228,8 @@ export default function Fleet({ isAdmin = false, query = "" }: { isAdmin?: boole
                         <th scope="row">
                           <a href={`#/plant/${p.mnemonic}`} className="mnem" title={p.name}>{p.mnemonic.toUpperCase()}</a>
                           {!compact && p.name && p.name.toLowerCase() !== p.mnemonic && <div className="small muted plant-name">{p.name}</div>}
+                          {p.is_simulated && <span className="badge sim" title="Simulated plant: fictitious, served by the plant simulator">SIM</span>}
+                          {p.protocols?.includes("soap") && <span className="badge proto small-badge" title="Uses SOAP web services">SOAP</span>}
                           {p.status !== "live" && <span className="badge amber small-badge">{p.status}</span>}
                           {!compact && isAdmin && <a className="poll-plant small" href={`#/admin/poll/${p.mnemonic}/all/run`} title={`Retrieve every ${p.mnemonic.toUpperCase()} API now and show the raw JSON`}>Retrieve now</a>}
                         </th>

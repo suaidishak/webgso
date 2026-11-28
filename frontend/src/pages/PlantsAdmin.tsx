@@ -3,11 +3,15 @@ import { api, CATS, CAT_LABEL, fmt } from "../api";
 import Icon, { Skeleton, Spinner } from "../Icon";
 import { BulkBar, NO_REGION, PageCheck, Pager, invalidatePlantIndex, regionsOf, usePlantIndex, useQueryState } from "../components";
 
-type Endpoint = { category: string; url: string; enabled: boolean; note: string | null; polled?: boolean; off_reason?: string | null };
+type Endpoint = { category: string; url: string; enabled: boolean; note: string | null; polled?: boolean; off_reason?: string | null;
+  protocol?: "rest" | "soap"; soap_operation?: string | null; soap_action?: string | null; soap_version?: string | null; soap_namespace?: string | null };
+// GSO SOAP profile defaults (backend soap.py): used when an operation, SOAPAction or namespace is left empty.
+const SOAP_NS = "urn:gso:lss:ws:v1";
+const SOAP_OPS: Record<string, string> = { rolling: "GetRollingForecast", dayahead: "GetDayAheadForecast", weekahead: "GetWeekAheadForecast", fourmonthsahead: "GetFourMonthsAheadForecast", mmf: "GetLiveMMF" };
 type PlantRow = {
   mnemonic: string; name: string; region: string | null; capacity_mw: number | null; mmf_station_count: number | null; status: string;
   notes: string | null; endpoints: Endpoint[]; auth_method: string; auth_param_name: string | null;
-  has_api_key: boolean; api_key_hint: string | null; updated_at: string | null; polling_enabled: boolean;
+  has_api_key: boolean; api_key_hint: string | null; updated_at: string | null; polling_enabled: boolean; is_simulated?: boolean;
 };
 type Polling = { fleet: boolean; types: Record<string, boolean> };
 
@@ -66,13 +70,15 @@ const DEFAULT_PATHS: Record<string, string> = {
   rolling: "forecast/rolling", dayahead: "forecast/dayahead", weekahead: "forecast/weekahead",
   fourmonthsahead: "forecast/fourmonthsahead", mmf: "mmf/live",
 };
-const AUTH_LABEL: Record<string, string> = { none: "None", header: "Header", query: "Query parameter" };
+const AUTH_LABEL: Record<string, string> = { none: "None", header: "API key in a header", query: "API key as a query parameter",
+  basic: "HTTP Basic (username and password)", wsse: "WS-Security username token (SOAP)" };
 
 function KeyBadge({ p }: { p: PlantRow }) {
   if (p.auth_method === "none") return <span className="muted small">No key</span>;
   return (
     <span className="small">
-      {p.auth_method === "header" ? `Header ${p.auth_param_name}` : `?${p.auth_param_name}=`}{" "}
+      {p.auth_method === "header" ? `Header ${p.auth_param_name}` : p.auth_method === "query" ? `?${p.auth_param_name}=`
+        : `${p.auth_method === "basic" ? "Basic" : "WS-Security"} ${p.auth_param_name}`}{" "}
       <code>{p.has_api_key ? `••••${p.api_key_hint || ""}` : "missing"}</code>
     </span>
   );
@@ -144,7 +150,50 @@ function PlantSummary({ p, tests }: { p: PlantRow; tests: TestState }) {
 }
 
 const PLANT_SORTS: [string, string][] = [["mnemonic", "Mnemonic A–Z"], ["name", "Name A–Z"], ["region", "Region"], ["capacity", "Largest capacity"], ["updated", "Recently changed"]];
-const LIST_DEFAULTS = { q: "", region: "", status: "", polling: "", key: "", sort: "mnemonic", size: "50", page: "0" };
+const LIST_DEFAULTS = { q: "", region: "", status: "", polling: "", key: "", sim: "", sort: "mnemonic", size: "50", page: "0" };
+
+/** Simulated (fictitious) plants from the plant simulator: how many there are, add or remove them all. */
+function SimulatedPanel({ count, onChange }: { count: number; onChange: () => void }) {
+  const [info, setInfo] = useState<{ count: number; simulator: string | null } | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  useEffect(() => { api("/admin/simulated-plants").then(setInfo).catch(() => setInfo(null)); }, [count]);
+  if (!info || (!info.count && !info.simulator)) return null;
+  const add = async () => {
+    setBusy(true); setErr(""); setMsg("");
+    try { const r = await api("/admin/simulated-plants", { method: "POST" }); setMsg(r.added.length ? `Added ${r.added.length} simulated plants.` : "All simulated plants are already here."); onChange(); }
+    catch (e: any) { setErr(e.message); }
+    setBusy(false);
+  };
+  const remove = async () => {
+    setBusy(true); setErr(""); setMsg("");
+    try { const r = await api(`/admin/simulated-plants?confirm=${encodeURIComponent(typed)}`, { method: "DELETE" }); setMsg(`Removed ${r.removed} simulated plants and their data.`); setConfirm(false); setTyped(""); onChange(); }
+    catch (e: any) { setErr(e.message); }
+    setBusy(false);
+  };
+  return (
+    <div className="card sim-note small">
+      <span className="badge sim">SIM</span>
+      <span>{info.count ? <><b>{info.count}</b> simulated plants. They are fictitious, served by the plant simulator, hidden from the fleet board unless you choose to show them, and left out of report emails unless a recipient list includes them.</>
+        : "No simulated plants. The plant simulator can add 5 SOAP and 20 REST fictitious plants for testing."}</span>
+      <span className="actions push-right">
+        {info.simulator && <button className="ghost small-btn" disabled={busy} onClick={add}>{busy && !confirm ? <Spinner /> : <Icon name="plus" size={14} />}Add simulated plants</button>}
+        {!!info.count && !confirm && <button className="ghost small-btn danger" disabled={busy} onClick={() => setConfirm(true)}>Remove all simulated plants</button>}
+      </span>
+      {confirm && <span className="inline">
+        <label className="sr-only" htmlFor="sim-confirm">Type SIMULATED to confirm</label>
+        <input id="sim-confirm" placeholder="Type SIMULATED to confirm" value={typed} onChange={e => setTyped(e.target.value)} autoFocus />
+        <button className="danger-fill small-btn" disabled={busy || typed !== "SIMULATED"} onClick={remove}>{busy ? <Spinner /> : null}Remove {info.count} plants and their data</button>
+        <button className="ghost small-btn" onClick={() => { setConfirm(false); setTyped(""); }}>Cancel</button>
+      </span>}
+      {msg && <span className="okline" role="status">{msg}</span>}
+      {err && <span className="error" role="alert">{err}</span>}
+    </div>
+  );
+}
 
 /** Run async jobs with at most n at once (testing 100+ plants one by one would take far too long). */
 async function pool<T>(items: T[], n: number, fn: (x: T) => Promise<unknown>) {
@@ -200,6 +249,7 @@ export function PlantsList({ query = "" }: { query?: string }) {
       && (!f.region || (p.region || NO_REGION) === f.region)
       && (!f.status || p.status === f.status)
       && (!f.polling || (f.polling === "on") === p.polling_enabled)
+      && (!f.sim || (f.sim === "simulated") === !!p.is_simulated)
       && (!f.key || (f.key === "missing" ? p.auth_method !== "none" && !p.has_api_key : f.key === "set" ? p.has_api_key : p.auth_method === "none")));
     const by: Record<string, (a: PlantRow, b: PlantRow) => number> = {
       mnemonic: (a, b) => a.mnemonic.localeCompare(b.mnemonic),
@@ -209,12 +259,13 @@ export function PlantsList({ query = "" }: { query?: string }) {
       updated: (a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""),
     };
     return out.sort(by[f.sort] || by.mnemonic);
-  }, [rows, f.q, f.region, f.status, f.polling, f.key, f.sort]);
+  }, [rows, f.q, f.region, f.status, f.polling, f.key, f.sim, f.sort]);
   if (!rows) return <Skeleton rows={8} />;
   const size = Number(f.size) || 0;
   const offset = size ? Number(f.page) * size : 0;
   const page = size ? shown.slice(offset, offset + size) : shown;
-  const filtered = !!(f.q || f.region || f.status || f.polling || f.key);
+  const filtered = !!(f.q || f.region || f.status || f.polling || f.key || f.sim);
+  const simCount = rows.filter(r => r.is_simulated).length;
   const selRows = rows.filter(r => sel.has(r.mnemonic));
 
   const bulk = async (label: string, body: Record<string, unknown>) => {
@@ -244,6 +295,7 @@ export function PlantsList({ query = "" }: { query?: string }) {
       </div>
       <p className="muted small">The scheduler reads this registry and the retrieval switches on every tick, so changes apply within 30 seconds. An endpoint is retrieved only when the fleet, its endpoint type, its plant and the endpoint itself are all switched on (and the plant is live). API keys are encrypted in the database and only their last 4 characters are shown. Test calls each endpoint now with the stored key: <b>Pass</b> means HTTP 200 and rev5-compliant, <b>Pass with warnings</b> means usable data with minor deviations, <b>Fail</b> means unreachable, an error status, or data that breaks a major rule. Tick plants to pause, resume, test or retrieve many at once.</p>
       {polling && <PollingPanel polling={polling} onChange={onPolling} />}
+      <SimulatedPanel count={simCount} onChange={() => { invalidatePlantIndex(); load(); }} />
 
       <div className="card board-tools">
         <div className="board-row">
@@ -264,6 +316,10 @@ export function PlantsList({ query = "" }: { query?: string }) {
             <select value={f.key} onChange={e => set({ key: e.target.value })}>
               <option value="">Any</option><option value="set">Key set</option><option value="missing">Key missing</option><option value="none">No key used</option>
             </select></label>
+          {simCount > 0 && <label className="field inline-field"><span>Plants</span>
+            <select value={f.sim} onChange={e => set({ sim: e.target.value })}>
+              <option value="">Real and simulated</option><option value="real">Real only</option><option value="simulated">Simulated only</option>
+            </select></label>}
           <label className="field inline-field"><span>Sort</span>
             <select value={f.sort} onChange={e => set({ sort: e.target.value })}>{PLANT_SORTS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
           {filtered && <button className="ghost small-btn" onClick={() => setQ({ ...LIST_DEFAULTS, sort: f.sort, size: f.size })}><Icon name="x" size={12} />Clear filters</button>}
@@ -303,7 +359,10 @@ export function PlantsList({ query = "" }: { query?: string }) {
               onChange={e => setSel(s => { const n = new Set(s); e.target.checked ? n.add(p.mnemonic) : n.delete(p.mnemonic); return n; })} /></td>
             <td><button className="ghost icon" aria-label={`Endpoints of ${p.mnemonic.toUpperCase()}`} aria-expanded={!!open[p.mnemonic]}
               onClick={() => setOpen(o => ({ ...o, [p.mnemonic]: !o[p.mnemonic] }))}><Icon name="chevron" className="chev" /></button></td>
-            <td><a href={`#/plant/${p.mnemonic}`} className="mnem">{p.mnemonic.toUpperCase()}</a><div className="small muted">{p.name}</div></td>
+            <td><a href={`#/plant/${p.mnemonic}`} className="mnem">{p.mnemonic.toUpperCase()}</a>
+              {p.is_simulated && <span className="badge sim" title="Simulated plant: fictitious, served by the plant simulator">SIM</span>}
+              {p.endpoints.some(e => e.protocol === "soap") && <span className="badge proto small-badge">SOAP</span>}
+              <div className="small muted">{p.name}</div></td>
             <td className="small">{p.region || <span className="muted">—</span>}</td>
             <td><Switch on={p.polling_enabled} onChange={v => togglePlant(p, v)} title={`Retrieval for ${p.mnemonic.toUpperCase()}: pause or resume all its endpoints`} /></td>
             <td><span className={`badge ${p.status === "live" ? "green" : p.status === "onboarding" ? "amber" : ""}`}>{p.status}</span></td>
@@ -329,7 +388,8 @@ export function PlantsList({ query = "" }: { query?: string }) {
                     <tr key={c}>
                       <td className="ep-switch"><Switch on={e.enabled} onChange={v => toggleEndpoint(p, c, v)} title={`Retrieval for ${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}`} /></td>
                       <td><b>{CAT_LABEL[c]}</b><div className={`small ${e.polled ? "good" : "muted"}`}>{e.polled ? "Retrieved on schedule" : e.off_reason}</div></td>
-                      <td className="mono small url-cell">{e.url}</td>
+                      <td className="mono small url-cell">{e.protocol === "soap" && <span className="badge proto small-badge" style={{ marginLeft: 0, marginRight: 6 }}>SOAP {e.soap_version || "1.1"}</span>}{e.url}
+                        {e.protocol === "soap" && <div className="muted">Operation {e.soap_operation || SOAP_OPS[c]}</div>}</td>
                       <td><Verdict r={tests[`${p.mnemonic}:${c}`]} /></td>
                       <td><button className="ghost small-btn" aria-label={`Test ${p.mnemonic.toUpperCase()} ${CAT_LABEL[c]}`} disabled={tests[`${p.mnemonic}:${c}`] === "running"} onClick={() => test(p.mnemonic, [c], c)}>Test</button></td>
                     </tr>
@@ -470,7 +530,7 @@ function DeleteDialog({ p, onClose, onDone }: { p: PlantRow; onClose: () => void
   );
 }
 
-const blankEndpoints = (): Endpoint[] => CATS.map(c => ({ category: c, url: "", enabled: true, note: null }));
+const blankEndpoints = (): Endpoint[] => CATS.map(c => ({ category: c, url: "", enabled: true, note: null, protocol: "rest" }));
 
 export function PlantForm({ mnem }: { mnem?: string }) {
   const editing = !!mnem;
@@ -481,6 +541,9 @@ export function PlantForm({ mnem }: { mnem?: string }) {
   const [showKey, setShowKey] = useState(false);
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
+  const [wsdl, setWsdl] = useState("");
+  const [wsdlBusy, setWsdlBusy] = useState(false);
+  const [wsdlMsg, setWsdlMsg] = useState("");
   const { tests, test, err: testErr } = useTests();
   const index = usePlantIndex();
   const regions = [...new Set((index || []).map(p => p.region).filter(Boolean) as string[])].sort();
@@ -494,7 +557,7 @@ export function PlantForm({ mnem }: { mnem?: string }) {
     api<PlantRow>(`/plants/${mnem}`).then(p => {
       const eps = blankEndpoints().map(b => {
         const e = p.endpoints.find(x => x.category === b.category);
-        return e ? { ...e } : { ...b, enabled: false };
+        return e ? { ...e, protocol: e.protocol || "rest" } : { ...b, enabled: false };
       });
       setF({ ...p, region: p.region ?? "", capacity_mw: p.capacity_mw ?? "", mmf_station_count: p.mmf_station_count ?? "", notes: p.notes ?? "",
         auth_param_name: p.auth_param_name ?? "", endpoints: eps });
@@ -512,6 +575,26 @@ export function PlantForm({ mnem }: { mnem?: string }) {
     set("endpoints", f.endpoints.map((e: Endpoint) => ({ ...e, url: `${b}/${m}/${DEFAULT_PATHS[e.category]}` })));
   };
 
+  // Read the plant's WSDL and set every API whose operation it recognises to SOAP with those settings.
+  const loadWsdl = async () => {
+    setErr(""); setWsdlMsg(""); setWsdlBusy(true);
+    try {
+      const w = await api("/admin/soap/wsdl", { method: "POST", body: { url: wsdl.trim() } });
+      const ver = w.operations.some((o: any) => o.soap_version === "1.1") ? "1.1" : "1.2";
+      const addr = (w.addresses.find((a: any) => a.soap_version === ver) || w.addresses[0])?.url || wsdl.trim().replace(/\?wsdl$/i, "");
+      const filled: string[] = [];
+      set("endpoints", f.endpoints.map((e: Endpoint) => {
+        const op = w.operations.find((o: any) => o.category === e.category && o.soap_version === ver);
+        if (!op) return e;
+        filled.push(CAT_LABEL[e.category]);
+        return { ...e, protocol: "soap", url: addr, soap_operation: op.operation, soap_action: op.soap_action, soap_version: ver, soap_namespace: w.namespace, enabled: true };
+      }));
+      setWsdlMsg(filled.length ? `Set ${filled.join(", ")} to SOAP ${ver} from the WSDL (${w.operations.length} operations found). Check them, then save.`
+        : `The WSDL has ${w.operations.length} operations, but none matched a plant API by name. Fill the operations in by hand.`);
+    } catch (e: any) { setErr(e.message); }
+    setWsdlBusy(false);
+  };
+
   const save = async () => {
     setErr(""); setSaving(true);
     const body: any = {
@@ -519,7 +602,10 @@ export function PlantForm({ mnem }: { mnem?: string }) {
       capacity_mw: f.capacity_mw === "" ? null : Number(f.capacity_mw),
       mmf_station_count: f.mmf_station_count === "" ? null : Number(f.mmf_station_count),
       auth_method: f.auth_method, auth_param_name: f.auth_method === "none" ? null : (f.auth_param_name.trim() || null),
-      endpoints: f.endpoints.filter((e: Endpoint) => e.url.trim()).map((e: Endpoint) => ({ ...e, url: e.url.trim() })),
+      endpoints: f.endpoints.filter((e: Endpoint) => e.url.trim()).map((e: Endpoint) => ({
+        category: e.category, url: e.url.trim(), enabled: e.enabled, note: e.note, protocol: e.protocol || "rest",
+        ...(e.protocol === "soap" ? { soap_operation: e.soap_operation || null, soap_action: e.soap_action || null,
+          soap_version: e.soap_version || "1.1", soap_namespace: e.soap_namespace || null } : {}) })),
     };
     if (f.auth_method === "none") body.api_key = f.has_api_key ? "" : null;
     else if (removeKey) body.api_key = "";
@@ -536,7 +622,10 @@ export function PlantForm({ mnem }: { mnem?: string }) {
   const savedCats: string[] = editing ? f.endpoints.filter((e: Endpoint) => e.url.trim()).map((e: Endpoint) => e.category) : [];
   const testing = savedCats.some(c => tests[`${mnem}:${c}`] === "running");
 
-  const keyPlaceholder = f.has_api_key ? `Leave blank to keep the stored key (••••${f.api_key_hint || ""})` : "Paste the plant's API key";
+  const userPass = f.auth_method === "basic" || f.auth_method === "wsse";
+  const secretWord = userPass ? "password" : "key";
+  const keyPlaceholder = f.has_api_key ? `Leave blank to keep the stored ${secretWord} (••••${f.api_key_hint || ""})` : userPass ? "The plant's password" : "Paste the plant's API key";
+  const anySoap = f.endpoints.some((e: Endpoint) => e.protocol === "soap");
   return (
     <>
       <div className="title-row">
@@ -568,32 +657,34 @@ export function PlantForm({ mnem }: { mnem?: string }) {
         </section>
 
         <section className="card">
-          <h3>API key <span className="muted small">(optional)</span></h3>
+          <h3>Authentication <span className="muted small">(optional)</span></h3>
           <div className="row2">
-            <label className="field">Send the key as
+            <label className="field">Method
               <select value={f.auth_method} onChange={e => set("auth_method", e.target.value)}>
                 {Object.entries(AUTH_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select></label>
             {f.auth_method !== "none" && (
-              <label className="field">{f.auth_method === "header" ? "Header name" : "Parameter name"}
-                <input value={f.auth_param_name} placeholder={f.auth_method === "header" ? "X-API-Key" : "apiKey"}
+              <label className="field">{userPass ? "Username" : f.auth_method === "header" ? "Header name" : "Parameter name"}
+                <input value={f.auth_param_name} placeholder={userPass ? "" : f.auth_method === "header" ? "X-API-Key" : "apiKey"} autoComplete="off"
                   onChange={e => set("auth_param_name", e.target.value)} /></label>
             )}
           </div>
           {f.auth_method !== "none" && (
             <>
-              <label className="field">Key
+              <label className="field">{userPass ? "Password" : "Key"}
                 <div className="inline">
                   <input type={showKey ? "text" : "password"} value={key} autoComplete="new-password" disabled={removeKey}
                     placeholder={keyPlaceholder} onChange={e => setKey(e.target.value)} />
-                  <button type="button" className="ghost" aria-pressed={showKey} aria-label={showKey ? "Hide key" : "Show key"} onClick={() => setShowKey(!showKey)}>{showKey ? "Hide" : "Show"}</button>
+                  <button type="button" className="ghost" aria-pressed={showKey} aria-label={showKey ? `Hide ${secretWord}` : `Show ${secretWord}`} onClick={() => setShowKey(!showKey)}>{showKey ? "Hide" : "Show"}</button>
                 </div></label>
               {f.has_api_key && (
-                <label className="toggle"><input type="checkbox" checked={removeKey} onChange={e => setRemoveKey(e.target.checked)} /> Remove the stored key</label>
+                <label className="toggle"><input type="checkbox" checked={removeKey} onChange={e => setRemoveKey(e.target.checked)} /> Remove the stored {secretWord}</label>
               )}
               <p className="muted small">Stored encrypted. It is sent on every call to this plant
-                {f.auth_method === "header" ? ` as the ${f.auth_param_name || "X-API-Key"} header` : ` as ?${f.auth_param_name || "apiKey"}=…`}, and never shown again after saving.
-                {f.auth_method === "query" && " A header is safer: query strings can end up in the plant's server logs."}</p>
+                {f.auth_method === "header" ? ` as the ${f.auth_param_name || "X-API-Key"} header` : f.auth_method === "query" ? ` as ?${f.auth_param_name || "apiKey"}=…`
+                  : f.auth_method === "basic" ? " in an HTTP Basic Authorization header" : " in a WS-Security UsernameToken in the SOAP header"}, and never shown again after saving.
+                {f.auth_method === "query" && " A header is safer: query strings can end up in the plant's server logs."}
+                {f.auth_method === "wsse" && !anySoap && " WS-Security only applies to SOAP APIs; none of this plant's APIs is set to SOAP."}</p>
             </>
           )}
           {f.auth_method === "none" && f.has_api_key && <p className="muted small">Saving with None removes the stored key.</p>}
@@ -605,14 +696,29 @@ export function PlantForm({ mnem }: { mnem?: string }) {
             <input aria-label="Base URL" placeholder="Base URL, e.g. https://ws3.gedine.work" value={base} onChange={e => setBase(e.target.value)} />
             <button type="button" className="ghost" onClick={fillFromBase}>Fill all from base URL</button>
           </div>
-          <p className="muted small">Each endpoint has its own full URL, because plants don't all follow the rev5 paths. Leave a URL empty if the plant doesn't serve it. Untick Retrieve to keep the URL but skip it.</p>
+          <div className="inline base">
+            <input aria-label="WSDL URL" placeholder="SOAP plant? WSDL URL, e.g. https://plant.example/Service.svc?wsdl" value={wsdl} onChange={e => setWsdl(e.target.value)} />
+            <button type="button" className="ghost" onClick={loadWsdl} disabled={wsdlBusy || !/^https?:\/\/\S+$/.test(wsdl.trim())}>{wsdlBusy ? <Spinner /> : null}Load from WSDL</button>
+          </div>
+          {wsdlMsg && <p className="okline small" role="status">{wsdlMsg}</p>}
+          <p className="muted small">Each endpoint has its own full URL, because plants don't all follow the rev5 paths. Leave a URL empty if the plant doesn't serve it. Untick Retrieve to keep the URL but skip it.
+            {" "}<b>REST</b> calls GET on the URL and expects rev5 JSON. <b>SOAP</b> posts a SOAP envelope to the URL (the service address) and reads the XML reply; the data is converted to the rev5 shape, so checks, reports and emails work the same. Empty SOAP fields use the GSO SOAP profile defaults.</p>
           <div className="table-wrap"><table>
-            <thead><tr><th>Endpoint</th><th>URL</th><th>Retrieve</th><th>Note</th>{editing && <th>Test (saved settings)</th>}</tr></thead>
+            <thead><tr><th>Endpoint</th><th>Protocol</th><th>URL</th><th>Retrieve</th><th>Note</th>{editing && <th>Test (saved settings)</th>}</tr></thead>
             <tbody>{f.endpoints.map((e: Endpoint, i: number) => (
               <tr key={e.category}>
                 <td><b>{CAT_LABEL[e.category]}</b></td>
-                <td><input className="url" aria-label={`${CAT_LABEL[e.category]} URL`} value={e.url} placeholder={`https://…/${f.mnemonic.toLowerCase() || "mnem"}/${DEFAULT_PATHS[e.category]}`}
-                  onChange={x => setEp(i, "url", x.target.value)} /></td>
+                <td><select aria-label={`${CAT_LABEL[e.category]} protocol`} value={e.protocol || "rest"} onChange={x => setEp(i, "protocol", x.target.value)}>
+                  <option value="rest">REST</option><option value="soap">SOAP</option></select></td>
+                <td><input className="url" aria-label={`${CAT_LABEL[e.category]} ${e.protocol === "soap" ? "service URL" : "URL"}`} value={e.url}
+                  placeholder={e.protocol === "soap" ? "https://…/Service.svc (service address)" : `https://…/${f.mnemonic.toLowerCase() || "mnem"}/${DEFAULT_PATHS[e.category]}`}
+                  onChange={x => setEp(i, "url", x.target.value)} />
+                  {e.protocol === "soap" && <div className="soap-fields small">
+                    <label className="field">Operation<input value={e.soap_operation ?? ""} placeholder={SOAP_OPS[e.category]} onChange={x => setEp(i, "soap_operation", x.target.value)} /></label>
+                    <label className="field">SOAPAction<input value={e.soap_action ?? ""} placeholder={`${e.soap_namespace || SOAP_NS}/${e.soap_operation || SOAP_OPS[e.category]}`} onChange={x => setEp(i, "soap_action", x.target.value)} /></label>
+                    <label className="field">SOAP version<select value={e.soap_version || "1.1"} onChange={x => setEp(i, "soap_version", x.target.value)}><option value="1.1">1.1</option><option value="1.2">1.2</option></select></label>
+                    <label className="field">Namespace<input value={e.soap_namespace ?? ""} placeholder={SOAP_NS} onChange={x => setEp(i, "soap_namespace", x.target.value)} /></label>
+                  </div>}</td>
                 <td><input type="checkbox" aria-label={`Retrieve ${CAT_LABEL[e.category]}`} checked={e.enabled} onChange={x => setEp(i, "enabled", x.target.checked)} /></td>
                 <td><input aria-label={`${CAT_LABEL[e.category]} note`} value={e.note ?? ""} onChange={x => setEp(i, "note", x.target.value || null)} /></td>
                 {editing && <td className="test-cell">{e.url.trim() ? (

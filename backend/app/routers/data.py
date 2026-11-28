@@ -2,16 +2,20 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Literal
+
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import soap
 from .. import validation as v
 from ..auth import current_user, plant_for_user, visible_plant_ids
 from ..config import now_local
 from ..db import get_session
 from ..switches import Switches, load_switches, off_reason
 from ..models import (
+    PlantEndpoint,
     CATEGORIES, FORECAST_CATEGORIES, AlertLog, AppUser, ComplianceFlag, DeadlineCheck, ForecastPoint,
     ForecastSnapshot, MmfReading, Plant, PollAttempt, RawResponse,
 )
@@ -28,8 +32,10 @@ def plant_out(p: Plant, admin: bool = False, sw: Switches | None = None) -> dict
             "created_at": p.created_at, "updated_at": p.updated_at} if admin else {}
     return {"id": p.id, "mnemonic": p.mnemonic, "name": p.name, "region": p.region, "capacity_mw": p.capacity_mw,
             "mmf_station_count": p.mmf_station_count, "status": p.status, "notes": p.notes, **auth,
-            "polling_enabled": p.polling_enabled,
+            "polling_enabled": p.polling_enabled, "is_simulated": p.is_simulated,
             "endpoints": [{"category": e.category, "url": e.url, "enabled": e.enabled, "note": e.note,
+                           "protocol": e.protocol, "soap_operation": e.soap_operation, "soap_action": e.soap_action,
+                           "soap_version": e.soap_version, "soap_namespace": e.soap_namespace,
                            "polled": off_reason(sw, p, e) is None, "off_reason": off_reason(sw, p, e)}
                           for e in sorted(p.endpoints, key=lambda e: CATEGORIES.index(e.category)
                                           if e.category in CATEGORIES else 99)]}
@@ -41,9 +47,9 @@ async def list_plants(brief: bool = False, user: AppUser = Depends(current_user)
     region, status), which stays small at hundreds of plants."""
     ids = await visible_plant_ids(user, s)
     if brief:
-        rows = (await s.execute(select(Plant.mnemonic, Plant.name, Plant.region, Plant.status)
+        rows = (await s.execute(select(Plant.mnemonic, Plant.name, Plant.region, Plant.status, Plant.is_simulated)
                                 .where(Plant.id.in_(ids)).order_by(Plant.mnemonic))).all()
-        return [{"mnemonic": m, "name": n, "region": r, "status": st} for m, n, r, st in rows]
+        return [{"mnemonic": m, "name": n, "region": r, "status": st, "is_simulated": sim} for m, n, r, st, sim in rows]
     plants = (await s.execute(select(Plant).where(Plant.id.in_(ids)).order_by(Plant.mnemonic))).scalars().all()
     sw = await load_switches(s)
     return [plant_out(p, user.role == "gso_admin", sw) for p in plants]
@@ -98,6 +104,7 @@ def _board_key(sort: str):
 async def fleet_status(q: str | None = None, state: str | None = None, category: str | None = None,
                        region: str | None = None, plant_status: str | None = Query(None, alias="status"),
                        sort: str = "problems", desc: bool = False, group: str | None = None,
+                       sim: Literal["all", "real", "simulated"] = "all",
                        offset: int = Query(0, ge=0), limit: int = Query(0, ge=0, le=5000),
                        user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
     """Compliance board: the latest poll per plant and category, plus open alert counts.
@@ -105,7 +112,8 @@ async def fleet_status(q: str | None = None, state: str | None = None, category:
     Built for a fleet of hundreds of plants: filter (q matches mnemonic, name or region; state; one API;
     region; plant status), sort (problems first by default), optionally group by region, and page
     (limit 0 = every matching plant). Tile counts cover every visible plant; facet counts (plants per
-    state) apply every filter except state, so the filter chips can show what each choice would give."""
+    state) apply every filter except state, so the filter chips can show what each choice would give.
+    sim narrows the whole board (tiles too) to real or simulated plants; sim_counts gives both totals."""
     if state and state not in BOARD_STATES:
         raise HTTPException(400, f"state must be one of {', '.join(BOARD_STATES)}")
     if category and category not in CATEGORIES:
@@ -117,17 +125,17 @@ async def fleet_status(q: str | None = None, state: str | None = None, category:
     polling = {"fleet": sw.fleet, "types": sw.types}
     empty = {"generated_at": now_local(), "plants": [], "polling": polling, "total": 0, "matched": 0,
              "counts": {}, "facets": {}, "regions": [], "groups": [], "mnemonics": [], "offset": offset,
-             "limit": limit}
+             "limit": limit, "sim_counts": {"real": 0, "simulated": 0}}
     if not ids:
         return empty
     # One indexed lookup per endpoint (LATERAL ... LIMIT 1) instead of DISTINCT ON over all poll history,
     # so the board stays fast as poll_attempt grows by tens of thousands of rows a day.
     latest = (await s.execute(text("""
         SELECT e.plant_id, e.category, a.id, a.started_at, a.http_status, a.latency_ms, a.is_valid,
-               a.major_flags, a.minor_flags, a.error, ok.started_at AS last_valid
+               a.major_flags, a.minor_flags, a.error, a.raw_response_id, ok.started_at AS last_valid
         FROM plant_endpoint e
         LEFT JOIN LATERAL (
-            SELECT id, started_at, http_status, latency_ms, is_valid, major_flags, minor_flags, error
+            SELECT id, started_at, http_status, latency_ms, is_valid, major_flags, minor_flags, error, raw_response_id
             FROM poll_attempt x WHERE x.plant_id = e.plant_id AND x.category = e.category
             ORDER BY x.started_at DESC, x.id DESC LIMIT 1) a ON true
         LEFT JOIN LATERAL (
@@ -139,6 +147,9 @@ async def fleet_status(q: str | None = None, state: str | None = None, category:
         AlertLog.plant_id.in_(ids), AlertLog.cleared_at.is_(None)).group_by(AlertLog.plant_id, AlertLog.category)
     )).all()
     plants = (await s.execute(select(Plant).where(Plant.id.in_(ids)).order_by(Plant.mnemonic))).scalars().all()
+    sim_counts = {"real": sum(not p.is_simulated for p in plants), "simulated": sum(p.is_simulated for p in plants)}
+    if sim != "all":
+        plants = [p for p in plants if p.is_simulated == (sim == "simulated")]
 
     by = {(r["plant_id"], r["category"]): r for r in latest}
     al = {(p, c): n for p, c, n in alerts}
@@ -155,8 +166,8 @@ async def fleet_status(q: str | None = None, state: str | None = None, category:
                 state_ = "disabled"
             elif r is None:
                 state_ = "never"
-            elif r["http_status"] != 200:
-                state_ = "down"
+            elif r["http_status"] != 200 and r["raw_response_id"] is None:
+                state_ = "down"  # a SOAP Fault (HTTP 500 with a reply) is an answer: non-compliant, not unreachable
             elif r["is_valid"]:
                 state_ = "minor" if r["minor_flags"] else "ok"
             else:
@@ -172,6 +183,7 @@ async def fleet_status(q: str | None = None, state: str | None = None, category:
             }
         last_polls = [c["last_poll"] for c in cells.values() if c["last_poll"]]
         rows.append({"mnemonic": p.mnemonic, "name": p.name, "region": p.region, "status": p.status,
+                     "is_simulated": p.is_simulated, "protocols": sorted({e.protocol for e in p.endpoints}),
                      "capacity_mw": p.capacity_mw, "polling_enabled": p.polling_enabled, "cells": cells,
                      "open_alerts": sum(c["open_alerts"] for c in cells.values()),
                      "worst_rank": max((STATE_RANK.get(c["state"], 0) for c in cells.values()), default=0),
@@ -216,7 +228,7 @@ async def fleet_status(q: str | None = None, state: str | None = None, category:
             g["problems"] += _board_match(r, "problems", None)
             g["open_alerts"] += r["open_alerts"]
     page = matched[offset:offset + limit] if limit else matched[offset:]
-    return {**empty, "plants": page, "total": len(rows), "matched": len(matched), "counts": counts,
+    return {**empty, "plants": page, "total": len(rows), "sim_counts": sim_counts, "matched": len(matched), "counts": counts,
             "open_alerts": sum(r["open_alerts"] for r in rows),
             "facets": facets, "groups": groups, "mnemonics": [r["mnemonic"] for r in matched],
             "regions": sorted(regions.values(), key=lambda g: (g["region"] is None, (g["region"] or "").lower()))}
@@ -306,6 +318,17 @@ async def inspect_attempt(attempt_id: int, user: AppUser = Depends(current_user)
     stored = (await s.execute(select(ComplianceFlag).where(ComplianceFlag.poll_attempt_id == attempt_id)
                               .order_by(ComplianceFlag.id))).scalars().all()
     located: dict[tuple[str, str], list[str]] = {}
+    xml_lines = converted = None
+    if raw is not None and raw.body_format == "xml" and raw.body_text is not None:
+        # SOAP: re-read the XML for its display lines (each tagged with the JSON Pointer it became) and
+        # the SOAP-level findings, using the endpoint's current SOAP settings.
+        ep = (await s.execute(select(PlantEndpoint).where(PlantEndpoint.plant_id == a.plant_id,
+                                                          PlantEndpoint.category == a.category))).scalar_one_or_none()
+        sp = soap.profile(ep) or {"operation": None, "namespace": None, "version": None}
+        conv = soap.convert(raw.body_text.encode(), sp["operation"], sp["namespace"], sp["version"])
+        xml_lines, converted = conv.lines, conv.body  # converted keeps the XML's element order (JSONB does not)
+        for f in conv.flags:
+            located.setdefault((f.rule, f.severity), []).extend(f.paths)
     if raw is not None and raw.body is not None:
         if a.category == "mmf":
             res = v.validate_mmf(raw.body, plant.mnemonic, a.started_at, plant.mmf_station_count)
@@ -323,6 +346,7 @@ async def inspect_attempt(attempt_id: int, user: AppUser = Depends(current_user)
         "plant": {"mnemonic": plant.mnemonic, "name": plant.name},
         "raw": None if raw is None else {"id": raw.id, "received_at": raw.received_at, "sha256": raw.content_hash,
                                          "body": raw.body, "body_text": raw.body_text,
+                                         "format": raw.body_format, "xml_lines": xml_lines, "converted": converted,
                                          "first_seen_attempt": raw.poll_attempt_id},
         "flags": flags,
     }
@@ -522,7 +546,7 @@ async def raw(raw_id: int, user: AppUser = Depends(current_user), s: AsyncSessio
     if r is None or r.plant_id not in await visible_plant_ids(user, s):
         raise HTTPException(404, "Not found")
     return {"id": r.id, "category": r.category, "received_at": r.received_at, "sha256": r.content_hash,
-            "body": r.body, "body_text": r.body_text}
+            "body": r.body, "body_text": r.body_text, "format": r.body_format}
 
 
 def flag_out(f: ComplianceFlag) -> dict:

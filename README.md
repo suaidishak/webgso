@@ -43,6 +43,32 @@ docker compose down -v
 SEED_MOCK_FLEET=120 SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
 ```
 
+**Simulated plants (SOAP and REST).** With `--profile mock`, the simulator also serves 25 fictitious
+plants, which the platform adds automatically, marked **SIM**: 5 SOAP plants (`SIMS01`..`SIMS05`,
+e.g. Bukit Contoh Solar) and 20 REST plants (`SIMR01`..`SIMR20`). About a third have deliberate faults:
+
+| Plant | Fault |
+|---|---|
+| SIMS02 | SOAP 1.2 with WS-Security username/password (works; shows the auth option) |
+| SIMS03 | Day-ahead answers with a SOAP Fault |
+| SIMS04 | Replies in an old namespace; Day-ahead values use decimal commas |
+| SIMS05 | Rolling items miss Unit/EndTime; MMF reply is cut off (invalid XML) |
+| SIMR03 / SIMR06 / SIMR09 / SIMR12 | Down (503) / slow (4 s) / Day-ahead 10 slots short / MMF HTTP 500 |
+| SIMR15 / SIMR18 / SIMR20 | Wrong PlantName / needs an X-API-Key (stored) / negative Rolling values |
+
+Simulated plants are hidden on the fleet board unless you pick "Simulated" or "Real and simulated",
+and they are left out of report emails unless a recipient list ticks "Include simulated plants".
+Plants page: **Remove all simulated plants** deletes them and their data (they then stay away after
+restarts); **Add simulated plants** brings them back.
+
+**SOAP plant APIs.** Each plant API is REST or SOAP (Plants > Edit > Endpoints > Protocol). SOAP
+settings: service URL, operation, SOAPAction, SOAP 1.1/1.2 and namespace, or **Load from WSDL**.
+Authentication adds HTTP Basic and WS-Security UsernameToken. There is no GSO SOAP specification
+yet, so the platform uses a "GSO SOAP profile" (rev5 field names inside the envelope, see
+`backend/app/soap.py`); replies are converted to the rev5 JSON shape, so checks, alerts, reports,
+templates and emails work unchanged. The raw-response view shows the received XML with findings
+highlighted, plus a Converted tab.
+
 **Without Docker:** Postgres 16, Python 3.12+, Node 20+.
 
 ```bash

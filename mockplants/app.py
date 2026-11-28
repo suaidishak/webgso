@@ -14,6 +14,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
+
+import sim
 
 app = FastAPI(title="Mock LSS plants")
 TZ = ZoneInfo("Asia/Kuala_Lumpur")
@@ -30,23 +33,23 @@ FLEET_FAULTS = os.getenv("MOCK_FLEET_FAULTS", "") in ("1", "true", "yes")
 
 
 def fleet_fault(mnem: str) -> str | None:
-    if not FLEET_FAULTS or mnem in PLANTS:
+    if not FLEET_FAULTS or mnem in PLANTS or mnem in sim.CAPACITY:
         return None
     return {0: "down", 1: "short", 2: "slow", 3: "mmf"}.get(zlib.crc32(mnem.encode()) % 20)
 
 
 async def apply_fleet_fault(mnem: str, cat: str):
-    f = fleet_fault(mnem)
+    f = fleet_fault(mnem) or sim.rest_fault(mnem)
     if f == "down":
         raise HTTPException(503, "Service unavailable")
     if f == "slow":
-        await asyncio.sleep(3)
+        await asyncio.sleep(4 if mnem in sim.CAPACITY else 3)
     if f == "mmf" and cat == "mmf":
         raise HTTPException(500, "MMF logger offline")
 
 
 def check_key(mnem: str, request: Request):
-    want = REQUIRED_KEYS.get(mnem)
+    want = REQUIRED_KEYS.get(mnem) or (sim.REST_KEY if sim.rest_fault(mnem) == "key" else None)
     if want and want not in (request.headers.get("x-api-key"), request.query_params.get("apiKey")):
         raise HTTPException(401, "Invalid or missing API key")
 
@@ -68,13 +71,18 @@ def add_months(d, n):
 
 
 def series(mnem, cat, start, end):
-    cap = PLANTS.get(mnem, 40)  # any other mnemonic answers too, so new plants can be tried
+    # any other mnemonic answers too, so new plants can be tried
+    cap = PLANTS.get(mnem) or sim.CAPACITY.get(mnem, 40)
+    neg = cat == "rolling" and sim.rest_fault(mnem) == "negative"
     pts, t = [], start
     while t < end:
+        val = solar(t, cap)
+        if neg and val == 0 and t.minute == 0:
+            val = -0.35
         pts.append({"StartTime": t.isoformat(), "EndTime": (t + SLOT).isoformat(),
-                    "ForecastValue": str(solar(t, cap)), "Unit": "MW"})
+                    "ForecastValue": val if mnem in sim.CAPACITY else str(val), "Unit": "MW"})
         t += SLOT
-    if (mnem, cat) in FAULTS or (cat == "dayahead" and fleet_fault(mnem) == "short"):
+    if (mnem, cat) in FAULTS or (cat == "dayahead" and (fleet_fault(mnem) or sim.rest_fault(mnem)) == "short"):
         pts = pts[:-10]
     return pts
 
@@ -89,11 +97,16 @@ async def forecast(mnem: str, cat: str, request: Request):
         raise HTTPException(404)
     check_key(mnem, request)
     await apply_fleet_fault(mnem, cat)
+    return forecast_body(mnem, cat)
+
+
+def forecast_body(mnem: str, cat: str) -> dict:
     n = now()
     day = n.replace(hour=0, minute=0, second=0)
     if cat == "rolling":
         start = n.replace(minute=n.minute - n.minute % 15, second=0) + SLOT
-        end = start + timedelta(hours=24, minutes=15)  # 97 points, as the pilot host serves
+        # 97 points, as the pilot host serves; simulated plants follow rev5 (96)
+        end = start + timedelta(hours=24, minutes=0 if mnem in sim.CAPACITY else 15)
     elif cat == "dayahead":
         start = day + timedelta(days=1) if n.hour >= 10 else day
         end = start + timedelta(days=5)
@@ -109,7 +122,9 @@ async def forecast(mnem: str, cat: str, request: Request):
         start = add_months(first, 1) if day.day >= 25 else first
         end = add_months(start, 4)
     src = "kmls" if mnem == "kals" else "sids" if mnem == "skns" else mnem  # duplicated data, as observed
-    return {"ForecastResponse": {"PlantName": mnem, "ForecastCategory": CATEGORY[cat],
+    name = mnem[:-1] + "x" if sim.rest_fault(mnem) == "name" else mnem
+    category = "Rolling" if cat == "rolling" and mnem in sim.CAPACITY else CATEGORY[cat]
+    return {"ForecastResponse": {"PlantName": name, "ForecastCategory": category,
                                  "ForecastData": series(src, cat, start, end)}}
 
 
@@ -126,16 +141,81 @@ async def mmf(mnem: str, request: Request):
         raise HTTPException(404)
     check_key(mnem, request)
     await apply_fleet_fault(mnem, "mmf")
+    return mmf_body(mnem)
+
+
+def mmf_body(mnem: str) -> dict:
     n = now().replace(second=0)
     n = n.replace(minute=n.minute - n.minute % 5)
     if mnem in ("kmls", "kals"):  # raw sensor dump, not rev5
         return {"data": [{"ts": n.timestamp(), "tgi": round(random.uniform(0, 900), 1), "poa": -3276.8,
                           "amb_temp": -40, "ws": "0.15820.0661"}]}
     stations = 3 if mnem == "mals" else 2
+    clean = mnem in sim.CAPACITY  # simulated plants send rev5-clean MMF (numbers, proper units, 12 parameters)
+    if clean:
+        stations = sim.SOAP_PLANTS[mnem][3] if mnem in sim.SOAP_PLANTS else 2
     items = []
     for name, unit, lo, hi in PARAMS:
+        if clean and name == "HorIrradiance2" or clean and name == "MWPerArea":
+            continue
+        if clean:
+            unit = {"C": "°C", "o": "°"}.get(unit, unit)
         item = {"Parameter": name, "Time": n.isoformat(), "Unit": unit}
         for st in range(1, stations + 1):
-            item[f"MMF{st}"] = "NaN" if mnem == "lmms" and name == "Humidity" else str(round(random.uniform(lo, hi), 3))
+            v = round(random.uniform(lo, hi), 3)
+            item[f"MMF{st}"] = v if clean else "NaN" if mnem == "lmms" and name == "Humidity" else str(v)
         items.append(item)
-    return {"MMFResponse": {"PlantName": mnem.upper(), "MMFData": items}}
+    return {"MMFResponse": {"PlantName": mnem if clean else mnem.upper(), "MMFData": items}}
+
+
+# ---------------------------------------------------------------- simulated plants (see sim.py)
+@app.get("/sim/catalog")
+async def sim_catalog():
+    """The fictitious plants the platform adds as simulated plants."""
+    return sim.catalog()
+
+
+def _xml(body: str, ver: str, status: int = 200) -> Response:
+    ct = "application/soap+xml; charset=utf-8" if ver == "1.2" else "text/xml; charset=utf-8"
+    return Response(body, status_code=status, media_type=ct.split(";")[0], headers={"Content-Type": ct})
+
+
+@app.get("/soap/{mnem}")
+async def soap_wsdl(mnem: str, request: Request):
+    if mnem not in sim.SOAP_PLANTS or "wsdl" not in {k.lower() for k in request.query_params}:
+        raise HTTPException(404)
+    base = str(request.base_url).rstrip("/")
+    return Response(sim.wsdl(mnem, base), media_type="text/xml")
+
+
+@app.post("/soap/{mnem}")
+async def soap_call(mnem: str, request: Request):
+    if mnem not in sim.SOAP_PLANTS:
+        raise HTTPException(404)
+    _, _, _, stations, ver, faults, _ = sim.SOAP_PLANTS[mnem]
+    body = (await request.body()).decode("utf-8", "replace")
+    # Operation: SOAPAction header (1.1) or the action parameter of the Content-Type (1.2); else the body element.
+    action = request.headers.get("soapaction", "").strip('"')
+    ct = request.headers.get("content-type", "")
+    if not action and 'action="' in ct:
+        action = ct.split('action="', 1)[1].split('"', 1)[0]
+    op = action.rsplit("/", 1)[-1] if action else ""
+    if op not in sim.OP_TO_CAT:
+        op = next((o for o in sim.OP_TO_CAT if f":{o}>" in body or f"<{o}>" in body), "")
+    if not op:
+        return _xml(sim.fault(ver, "Client" if ver == "1.1" else "Sender", "Unknown operation or SOAPAction"), ver, 500)
+    if ("Envelope" not in body) or (sim.NS_SOAP12 if ver == "1.2" else sim.NS_SOAP11) not in body:
+        return _xml(sim.fault(ver, "VersionMismatch", f"This service speaks SOAP {ver}"), ver, 500)
+    if "wsse" in faults and not sim.wsse_ok(body):
+        return _xml(sim.fault(ver, "Client" if ver == "1.1" else "Sender", "WS-Security authentication failed",
+                              "Missing or wrong UsernameToken"), ver, 500)
+    if f"<{'gso:' if 'gso:PlantName' in body else ''}PlantName>{mnem}<" not in body:
+        return _xml(sim.fault(ver, "Client" if ver == "1.1" else "Sender", "Unknown PlantName"), ver, 500)
+    cat = sim.OP_TO_CAT[op]
+    if f"fault:{cat}" in faults:
+        return _xml(sim.fault(ver, "Server" if ver == "1.1" else "Receiver",
+                              "Forecast for the requested period has not been generated yet",
+                              "Forecast engine job DA-RUN is still pending"), ver, 500)
+    if cat == "mmf":
+        return _xml(sim.mmf_xml(mnem, ver, op, mmf_body(mnem), faults), ver)
+    return _xml(sim.forecast_xml(mnem, ver, op, forecast_body(mnem, cat), faults, cat), ver)

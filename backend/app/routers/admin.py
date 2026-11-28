@@ -5,6 +5,8 @@ import time as _time
 from datetime import date, time
 from typing import Literal
 
+import httpx
+
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -20,6 +22,7 @@ from ..models import (
     PollRun, PollSchedule, PollSwitch, RecipientList,
     ScheduleRun, UserPlantAccess,
 )
+from .. import simulated, soap
 from ..plant_keys import encrypt, hint as key_hint
 from ..poller import poll_endpoint
 from ..scheduler import effective_schedules, in_dates, in_force, matches, next_runs, precedence
@@ -101,6 +104,23 @@ class EndpointIn(BaseModel):
     url: str = Field(pattern=r"^https?://\S+$", max_length=500)
     enabled: bool = True
     note: str | None = None
+    # REST: GET the URL. SOAP: POST an envelope to the URL (the service address); empty SOAP fields
+    # take the GSO SOAP profile defaults (see soap.py).
+    protocol: Literal["rest", "soap"] = "rest"
+    soap_operation: str | None = Field(None, max_length=120, pattern=r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
+    soap_action: str | None = Field(None, max_length=300)
+    soap_version: Literal["1.1", "1.2"] | None = None
+    soap_namespace: str | None = Field(None, max_length=300)
+
+    @model_validator(mode="after")
+    def clean(self):
+        for k in ("soap_operation", "soap_namespace", "soap_action"):
+            setattr(self, k, (getattr(self, k) or "").strip() or None)
+        if self.protocol == "rest":
+            self.soap_operation = self.soap_action = self.soap_version = self.soap_namespace = None
+        else:
+            self.soap_version = self.soap_version or "1.1"
+        return self
 
 
 class PlantIn(BaseModel):
@@ -112,8 +132,10 @@ class PlantIn(BaseModel):
     region: str | None = Field(None, max_length=60)
     notes: str | None = None
     endpoints: list[EndpointIn] = []
-    auth_method: str = Field("none", pattern="^(none|header|query)$")
-    auth_param_name: str | None = Field(None, max_length=100, pattern=r"^[A-Za-z0-9_\-]+$")
+    # basic = HTTP Basic; wsse = WS-Security UsernameToken inside SOAP envelopes. For both, auth_param_name
+    # is the username and api_key the password.
+    auth_method: str = Field("none", pattern="^(none|header|query|basic|wsse)$")
+    auth_param_name: str | None = Field(None, max_length=100, pattern=r"^[A-Za-z0-9_.@\-]+$")
     # Write-only. Omitted or null keeps the stored key; "" removes it; any other value replaces it.
     api_key: str | None = Field(None, max_length=500)
 
@@ -138,13 +160,19 @@ def _apply(p: Plant, body: PlantIn):
     p.status, p.notes = body.status, body.notes
     p.region = (body.region or "").strip() or None
     p.auth_method = body.auth_method
-    p.auth_param_name = (body.auth_param_name or ("X-API-Key" if body.auth_method == "header" else "apiKey")
-                         ) if body.auth_method != "none" else None
+    if body.auth_method in ("basic", "wsse"):
+        if not body.auth_param_name:
+            raise HTTPException(400, "Enter the username")
+        p.auth_param_name = body.auth_param_name
+    else:
+        p.auth_param_name = (body.auth_param_name or ("X-API-Key" if body.auth_method == "header" else "apiKey")
+                             ) if body.auth_method != "none" else None
     if body.api_key is not None:
         key = body.api_key.strip()
         p.api_key_enc, p.api_key_hint = (encrypt(key), key_hint(key)) if key else (None, None)
     if p.auth_method != "none" and not p.api_key_enc:
-        raise HTTPException(400, "Enter the API key, or set authentication to None")
+        raise HTTPException(400, "Enter the password" if p.auth_method in ("basic", "wsse")
+                            else "Enter the API key, or set authentication to None")
     p.updated_at = now_local()
     _set_endpoints(p, body.endpoints)
 
@@ -223,11 +251,15 @@ def _set_endpoints(p: Plant, eps: list[EndpointIn]):
             p.endpoints.remove(x)
     for e in eps:
         url = e.url.strip()
+        soap_cfg = dict(protocol=e.protocol, soap_operation=e.soap_operation, soap_action=e.soap_action,
+                        soap_version=e.soap_version, soap_namespace=e.soap_namespace)
         if e.category in existing:
             x = existing[e.category]
             x.url, x.enabled, x.note = url, e.enabled, e.note
+            for k, val in soap_cfg.items():
+                setattr(x, k, val)
         else:
-            p.endpoints.append(PlantEndpoint(category=e.category, url=url, enabled=e.enabled, note=e.note))
+            p.endpoints.append(PlantEndpoint(category=e.category, url=url, enabled=e.enabled, note=e.note, **soap_cfg))
 
 
 class BulkIn(BaseModel):
@@ -951,6 +983,62 @@ async def update_deadline(did: int, body: DeadlineIn, admin: AppUser = Depends(r
     await audit(s, admin, "deadline.update", "compliance_deadline", did, before, body.model_dump())
     await s.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- SOAP and simulated plants
+class WsdlIn(BaseModel):
+    url: str = Field(pattern=r"^https?://\S+$", max_length=500)
+
+
+@router.post("/soap/wsdl")
+async def load_wsdl(body: WsdlIn, admin: AppUser = Depends(require_admin)):
+    """Read a plant's WSDL: its operations (with SOAPAction, SOAP version and the plant API each one
+    probably serves), target namespace and service address, to fill in SOAP endpoint settings."""
+    try:
+        async with httpx.AsyncClient(timeout=20, verify=get_settings().verify_tls, follow_redirects=True) as c:
+            r = await c.get(body.url)
+    except httpx.HTTPError as e:
+        raise HTTPException(400, f"Could not fetch the WSDL: {type(e).__name__}: {e}"[:300])
+    if r.status_code != 200:
+        raise HTTPException(400, f"Could not fetch the WSDL: HTTP {r.status_code}")
+    try:
+        return soap.parse_wsdl(r.content[:5_000_000])
+    except soap.XmlError as e:
+        raise HTTPException(400, f"Could not read the WSDL: {e}")
+
+
+@router.get("/simulated-plants")
+async def simulated_status(admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    n = (await s.execute(select(func.count()).select_from(Plant).where(Plant.is_simulated))).scalar_one()
+    return {"count": n, "simulator": get_settings().sim_base_url or None}
+
+
+@router.post("/simulated-plants")
+async def add_simulated(admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+    """Add the simulator's fictitious plants (those not already present)."""
+    base = get_settings().sim_base_url
+    if not base:
+        raise HTTPException(400, "No simulator configured (SIM_BASE_URL)")
+    try:
+        catalog = await simulated.fetch_catalog(base)
+    except (httpx.HTTPError, KeyError, ValueError):
+        raise HTTPException(400, "The simulator is not running. Start docker compose with --profile mock.")
+    res = await simulated.add_from_catalog(s, base, catalog)
+    await audit(s, admin, "plant.simulated.add", "plant", f"{len(res['added'])} plants", None, res)
+    await s.commit()
+    return res
+
+
+@router.delete("/simulated-plants")
+async def remove_simulated(confirm: str = "", admin: AppUser = Depends(require_admin),
+                           s: AsyncSession = Depends(get_session)):
+    """Delete every simulated plant and all its data. The caller must send confirm=SIMULATED."""
+    if confirm != "SIMULATED":
+        raise HTTPException(400, "Type SIMULATED to confirm")
+    gone = await simulated.remove_all(s)
+    await audit(s, admin, simulated.REMOVED_ACTION, "plant", f"{len(gone)} plants", None, {"plants": gone})
+    await s.commit()
+    return {"ok": True, "removed": len(gone)}
 
 
 # ---------------------------------------------------------------- audit

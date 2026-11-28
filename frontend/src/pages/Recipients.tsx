@@ -11,7 +11,7 @@ import { ApiPicker } from "./Admin";
 
 export type RecipientList = {
   id: number; code: string; name: string; emails: string[]; categories: string[] | null;
-  forecast_interval: number; mmf_interval: number; mmf_source: "station" | "average"; enabled: boolean;
+  forecast_interval: number; mmf_interval: number; mmf_source: "station" | "average"; enabled: boolean; include_simulated?: boolean;
   notes: string | null; schedules?: { id: number; name: string; enabled: boolean }[];
   last_email?: { status: string; at: string } | null;
 };
@@ -43,7 +43,7 @@ function Tabs({ on }: { on: "lists" | "log" }) {
 }
 
 const BLANK = { name: "", emails: [] as string[], categories: null as string[] | null, forecast_interval: 15, mmf_interval: 15,
-  mmf_source: "station", enabled: true, notes: "" };
+  mmf_source: "station", enabled: true, include_simulated: false, notes: "" };
 
 function ListEditor({ start, onClose, onSaved }: { start: Partial<RecipientList>; onClose: () => void; onSaved: () => void }) {
   const [f, setF] = useState<any>({ ...BLANK, ...start, notes: start.notes || "" });
@@ -58,7 +58,8 @@ function ListEditor({ start, onClose, onSaved }: { start: Partial<RecipientList>
   const save = async () => {
     setErr(""); setSaving(true);
     const body = { name: f.name, emails: [text], categories: cats.length ? cats : null, forecast_interval: Number(f.forecast_interval),
-      mmf_interval: Number(f.mmf_interval), mmf_source: f.mmf_source, enabled: f.enabled, notes: f.notes || null };
+      mmf_interval: Number(f.mmf_interval), mmf_source: f.mmf_source, enabled: f.enabled,
+      include_simulated: !!f.include_simulated, notes: f.notes || null };
     try {
       await api(f.id ? `/admin/recipient-lists/${f.id}` : "/admin/recipient-lists", { method: f.id ? "PUT" : "POST", body });
       onSaved();
@@ -91,6 +92,7 @@ function ListEditor({ start, onClose, onSaved }: { start: Partial<RecipientList>
           <label className="field wide"><span>Notes (optional)</span>
             <input value={f.notes} placeholder="Who this list is for" onChange={e => set("notes", e.target.value)} /></label>
           <label className="toggle wide"><input type="checkbox" checked={f.enabled} onChange={e => set("enabled", e.target.checked)} /> List on (when off, paired schedules skip it)</label>
+          <label className="toggle wide"><input type="checkbox" checked={!!f.include_simulated} onChange={e => set("include_simulated", e.target.checked)} /> Include simulated plants (fictitious test plants; leave off for real recipients)</label>
         </div>
         {err && <div className="error small" role="alert">{err}</div>}
         <div className="actions">

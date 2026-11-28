@@ -54,6 +54,7 @@ class ListIn(BaseModel):
     forecast_interval: int = 15
     mmf_interval: int = 15
     mmf_source: str = Field("station", pattern="^(station|average)$")
+    include_simulated: bool = False
     enabled: bool = True
     notes: str | None = Field(None, max_length=2000)
 

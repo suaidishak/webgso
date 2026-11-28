@@ -86,6 +86,14 @@ UPGRADES = [
         ALTER TABLE schedule_run ADD CONSTRAINT uq_run UNIQUE (schedule_id, plant_id, category, due_at);
       END IF;
     END $$""",
+    # 28 Nov 2026: report emails after scheduled retrievals.
+    "ALTER TABLE poll_schedule ADD COLUMN IF NOT EXISTS recipient_list_ids INTEGER[]",
+    "ALTER TABLE poll_schedule ADD COLUMN IF NOT EXISTS email_since TIMESTAMP",
+    # A scheduled report goes once per schedule, list and submission (resends and tests are extra rows).
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_report_email_scheduled ON report_email (schedule_id, recipient_list_id, due_at) "
+    "WHERE kind = 'scheduled'",
+    # Finding finished scheduled retrievals to email.
+    "CREATE INDEX IF NOT EXISTS ix_run_sched_due ON schedule_run (schedule_id, due_at)",
 ]
 
 

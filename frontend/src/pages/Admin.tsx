@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, CAT_LABEL, CATS, fmt, User } from "../api";
 import Icon, { Skeleton, Spinner } from "../Icon";
 import { Pager, PlantPicker, plantsLabel, regionsOf, useDebounced, usePlantIndex } from "../components";
+import type { RecipientList } from "./Recipients";
 
 function UserRow({ u, onSaved }: { u: User; onSaved: () => void }) {
   const [role, setRole] = useState(u.role || (u.organisation_type === "GSO" ? "gso_user" : "lss_user"));
@@ -64,7 +65,7 @@ type Schedule = {
   interval_minutes: number | null; window_start: string | null; window_end: string | null; cron: string | null;
   enabled: boolean; timeout_s: number; retries: number; retry_backoff_s: number; jitter_s: number;
   valid_from: string | null; valid_to: string | null; next_runs: string[]; in_force: boolean; priority: number;
-  governs: number; matches: number;
+  governs: number; matches: number; recipient_list_ids: number[] | null;
 };
 type Cell = { state: "scheduled" | "none" | "endpoint_off" | "no_endpoint" | "not_live"; schedule_id: number | null; also: number[]; off_reason: string | null };
 type CoverageRow = { plant: string; name: string; region: string | null; status: string; cells: Record<string, Cell> };
@@ -75,7 +76,7 @@ const whenLabel = (s: Schedule) => s.kind === "interval"
   : s.cron || "";
 
 /** "All APIs" or a set of API chips. An empty selection means all APIs. */
-function ApiPicker({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+export function ApiPicker({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
   const sel = new Set(value);
   return (
     <div className="chips" role="group" aria-label="APIs">
@@ -92,22 +93,39 @@ function ApiPicker({ value, onChange }: { value: string[]; onChange: (v: string[
 }
 
 const BLANK: Partial<Schedule> = { name: "", plants: null, categories: null, kind: "interval", interval_minutes: 15, cron: "",
-  window_start: null, window_end: null, enabled: true, timeout_s: 60, retries: 2, retry_backoff_s: 20, jitter_s: 20, valid_from: null, valid_to: null };
+  window_start: null, window_end: null, enabled: true, timeout_s: 60, retries: 2, retry_backoff_s: 20, jitter_s: 20, valid_from: null, valid_to: null, recipient_list_ids: null };
 
-function ScheduleEditor({ start, onClose, onSaved }: { start: Partial<Schedule>; onClose: () => void; onSaved: () => void }) {
+/** Recipient lists as toggle chips (code and name). */
+function ListPicker({ lists, value, onChange }: { lists: RecipientList[]; value: number[]; onChange: (v: number[]) => void }) {
+  const sel = new Set(value);
+  if (!lists.length) return <span className="small muted">No recipient lists yet. <a href="#/admin/recipients">Create one under Email reports</a>.</span>;
+  return (
+    <div className="chips wide-chips" role="group" aria-label="Recipient lists">
+      {lists.map(l => (
+        <button key={l.id} type="button" className={`chip ${sel.has(l.id) ? "on" : ""}`} aria-pressed={sel.has(l.id)}
+          title={`${l.emails.length} address${l.emails.length === 1 ? "" : "es"}${l.enabled ? "" : " · list is off"}`}
+          onClick={() => onChange(sel.has(l.id) ? value.filter(x => x !== l.id) : [...value, l.id])}>
+          <b>{l.code}</b>&nbsp;{l.name}{!l.enabled && <span className="muted">&nbsp;(off)</span>}</button>
+      ))}
+    </div>
+  );
+}
+
+function ScheduleEditor({ start, lists, onClose, onSaved }: { start: Partial<Schedule>; lists: RecipientList[]; onClose: () => void; onSaved: () => void }) {
   const [f, setF] = useState<any>({ ...BLANK, ...start, cron: start.cron || "", interval_minutes: start.interval_minutes ?? 15 });
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const set = (k: string, v: any) => setF((x: any) => ({ ...x, [k]: v }));
   const plants: string[] = f.plants || [];
   const cats: string[] = f.categories || [];
+  const listIds: number[] = f.recipient_list_ids || [];
   const save = async () => {
     setErr(""); setSaving(true);
     const body = { name: f.name, plants: plants.length ? plants : null, categories: cats.length ? cats : null, kind: f.kind,
       interval_minutes: f.kind === "interval" ? Number(f.interval_minutes) : null, cron: f.kind === "cron" ? f.cron : null,
       window_start: f.kind === "interval" && f.window_start ? f.window_start : null, window_end: f.kind === "interval" && f.window_end ? f.window_end : null,
       enabled: f.enabled, timeout_s: Number(f.timeout_s), retries: Number(f.retries), retry_backoff_s: Number(f.retry_backoff_s),
-      jitter_s: Number(f.jitter_s), valid_from: f.valid_from || null, valid_to: f.valid_to || null };
+      jitter_s: Number(f.jitter_s), valid_from: f.valid_from || null, valid_to: f.valid_to || null, recipient_list_ids: listIds };
     try {
       await api(f.id ? `/admin/schedules/${f.id}` : "/admin/schedules", { method: f.id ? "PUT" : "POST", body });
       onSaved();
@@ -150,6 +168,10 @@ function ScheduleEditor({ start, onClose, onSaved }: { start: Partial<Schedule>;
             <label className="field"><span>Starts (optional)</span><input type="date" value={f.valid_from || ""} onChange={e => set("valid_from", e.target.value)} /></label>
             <label className="field"><span>Ends (optional)</span><input type="date" value={f.valid_to || ""} onChange={e => set("valid_to", e.target.value)} /></label>
           </div>
+          <div className="field wide"><span>Email the report to · after each scheduled retrieval, each list gets that submission's report in the client template</span>
+            <ListPicker lists={lists} value={listIds} onChange={v => set("recipient_list_ids", v)} />
+            {listIds.length > 0 && f.kind === "interval" && Number(f.interval_minutes) < 60 &&
+              <span className="small amber-text">This schedule runs every {f.interval_minutes} min, so each list gets an email every {f.interval_minutes} min.</span>}</div>
           <label className="toggle wide"><input type="checkbox" checked={f.enabled} onChange={e => set("enabled", e.target.checked)} /> Schedule on</label>
         </div>
         <p className="small muted">Covers {specific} and {cats.length ? cats.map(c => CAT_LABEL[c]).join(", ") : "all APIs"}.
@@ -249,8 +271,24 @@ export function AdminSchedules() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(0);
   const [filter, setFilterState] = useState({ gaps: false, schedule: "" });
+  const [lists, setLists] = useState<RecipientList[]>([]);
+  const [note, setNote] = useState("");
   const setFilter = (p: Partial<typeof filter>) => setFilterState(f => ({ ...f, ...p }));
-  const load = () => { api("/admin/schedules").then(setData).catch(e => setErr(e.message)); api("/admin/deadlines").then(setDeadlines); };
+  const load = () => {
+    api("/admin/schedules").then(setData).catch(e => setErr(e.message)); api("/admin/deadlines").then(setDeadlines);
+    api("/admin/recipient-lists").then(d => setLists(d.rows)).catch(() => {});
+  };
+  const listById = useMemo(() => new Map(lists.map(l => [l.id, l])), [lists]);
+  const emailLatest = async (s: Schedule) => {
+    setBusy(s.id); setErr(""); setNote("");
+    try {
+      const r = await api(`/admin/schedules/${s.id}/send-latest`, { method: "POST" });
+      const ok = r.emails.filter((x: any) => x.status === "sent").map((x: any) => x.list);
+      const bad = r.emails.filter((x: any) => x.status !== "sent").map((x: any) => `${x.list} (${x.status})`);
+      setNote(`Report for the ${fmt(r.due_at)} submission of "${s.name}": ${ok.length ? `sent to ${ok.join(", ")}` : "not sent"}${bad.length ? `; not sent to ${bad.join(", ")}, see Sent emails` : ""}.`);
+    } catch (e: any) { setErr(e.message); }
+    setBusy(0);
+  };
   useEffect(load, []);
   const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const showCoverage = (p: Partial<typeof filter>) => {
@@ -304,6 +342,7 @@ export function AdminSchedules() {
       </details>
 
       {err && <div className="error" role="alert">{err}</div>}
+      {note && <div className="ok-text small" role="status">{note} <a href="#/admin/recipients/log">Sent emails</a></div>}
       {data && data.unscheduled > 0 && (
         <div className="banner soft" role="status">
           <b>{data.unscheduled.toLocaleString()} plant/API pair{data.unscheduled === 1 ? "" : "s"} have no schedule</b> and are not retrieved automatically.
@@ -313,7 +352,7 @@ export function AdminSchedules() {
       {!data ? <Skeleton rows={5} /> : (
         <div className="table-wrap"><table className="schedules">
           <thead><tr><th className="num" title="Priority: lower number wins">#</th><th>Name</th><th>Plants</th><th>APIs</th><th>When</th>
-            <th>Retries · timeout</th><th>Dates</th><th>Status</th><th className="num" title="Plant/API pairs this schedule decides">Governs</th><th>Next runs</th><th></th></tr></thead>
+            <th>Retries · timeout</th><th>Dates</th><th>Status</th><th className="num" title="Plant/API pairs this schedule decides">Governs</th><th>Next runs</th><th>Email to</th><th></th></tr></thead>
           <tbody>{data.rows.map(s => (
             <tr key={s.id} className={!s.enabled || !s.in_force ? "dim" : ""}>
               <td className="num"><b>{s.priority}</b></td>
@@ -328,10 +367,16 @@ export function AdminSchedules() {
               <td>{status(s)}</td>
               <td className="num">{governs(s)}</td>
               <td className="small">{s.next_runs.slice(0, 3).map(t => fmt(t).slice(5)).join(", ") || "—"}</td>
+              <td className="small">{s.recipient_list_ids?.length
+                ? s.recipient_list_ids.map(id => { const l = listById.get(id); return l
+                    ? <span key={id} className={`badge ${l.enabled ? "" : "dim-badge"}`} title={`${l.name}: ${l.emails.length} address${l.emails.length === 1 ? "" : "es"}${l.enabled ? "" : " (list is off)"}`}>{l.code}</span> : null; })
+                : <span className="muted">—</span>}</td>
               <td className="actions">
                 <button className="ghost small-btn" disabled={busy === s.id} onClick={() => setEditing(s)}>Edit</button>
                 <button className="ghost small-btn" disabled={busy === s.id} onClick={() => toggle(s)}>{s.enabled ? "Turn off" : "Turn on"}</button>
                 <button className="ghost small-btn" disabled={busy === s.id} onClick={() => setEditing({ ...s, id: undefined, name: `${s.name} (copy)` })}>Copy</button>
+                {!!s.recipient_list_ids?.length && <button className="ghost small-btn" disabled={busy === s.id} title="Email the report of this schedule's latest finished retrieval now, to its lists"
+                  onClick={() => emailLatest(s)}>{busy === s.id ? <Spinner /> : null}Email latest</button>}
                 <button className="ghost small-btn danger" disabled={busy === s.id} onClick={() => remove(s)}>Delete</button>
               </td>
             </tr>
@@ -354,7 +399,7 @@ export function AdminSchedules() {
             <td className="num">{d.grace_minutes} min</td><td>{d.enabled ? <span className="badge green">On</span> : <span className="badge">Off</span>}</td></tr>
         ))}</tbody>
       </table></div>
-      {editing && <ScheduleEditor start={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {editing && <ScheduleEditor start={editing} lists={lists} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </>
   );
 }

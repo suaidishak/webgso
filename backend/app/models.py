@@ -167,6 +167,10 @@ class PollSchedule(Base):
     jitter_s: Mapped[int] = mapped_column(Integer, default=20)
     valid_from: Mapped[date | None] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
+    # Recipient lists emailed the report after each scheduled retrieval (never after Retrieve now).
+    recipient_list_ids: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
+    # Only retrievals queued at or after this time are emailed, so pairing a list does not send old ones.
+    email_since: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_by: Mapped[int | None] = mapped_column(Integer)
 
@@ -322,3 +326,47 @@ class AlertLog(Base):
     acknowledged_by: Mapped[int | None] = mapped_column(Integer)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime)
     detail: Mapped[dict | None] = mapped_column(JSONB)
+
+
+# ---------------------------------------------------------------- report emails
+class RecipientList(Base):
+    """A named list of email addresses with a running code (RL-001, RL-002 ..) that schedules refer to.
+    It also says which report the list receives: which APIs, and the template options."""
+    __tablename__ = "recipient_list"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str | None] = mapped_column(String(12), unique=True)  # RL-<id>, never reused
+    name: Mapped[str] = mapped_column(String(120))
+    emails: Mapped[list[str]] = mapped_column(ARRAY(String(320)))
+    categories: Mapped[list[str] | None] = mapped_column(ARRAY(String(30)))  # NULL = every API
+    forecast_interval: Mapped[int] = mapped_column(Integer, default=15)  # 15 | 60
+    mmf_interval: Mapped[int] = mapped_column(Integer, default=15)  # 5 | 15 | 60
+    mmf_source: Mapped[str] = mapped_column(String(10), default="station")  # station | average
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ReportEmail(Base):
+    """The sent-email log: one row per email (report or test), with its delivery status and retries.
+    A scheduled report is unique per (schedule, list, submission), so it is never sent twice."""
+    __tablename__ = "report_email"
+    __table_args__ = (Index("ix_report_email_due", "status", "next_attempt_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(10))  # scheduled | resend | test
+    schedule_id: Mapped[int | None] = mapped_column(ForeignKey("poll_schedule.id", ondelete="SET NULL"))
+    schedule_name: Mapped[str | None] = mapped_column(String(120))
+    recipient_list_id: Mapped[int | None] = mapped_column(ForeignKey("recipient_list.id", ondelete="SET NULL"))
+    list_code: Mapped[str | None] = mapped_column(String(12))
+    due_at: Mapped[datetime | None] = mapped_column(DateTime)  # the submission (scheduled retrieval time)
+    recipients: Mapped[list[str]] = mapped_column(ARRAY(String(320)))
+    subject: Mapped[str | None] = mapped_column(Text)
+    attachments: Mapped[list | None] = mapped_column(JSONB)  # [{name, bytes}]
+    summary: Mapped[dict | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(10), default="pending")  # pending | sending | retry | sent | failed | skipped
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_by: Mapped[int | None] = mapped_column(Integer)

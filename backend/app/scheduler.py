@@ -336,6 +336,9 @@ async def run_forever():
             log.info("another scheduler holds the lock; waiting")
             await asyncio.sleep(tick_s)
         log.info("scheduler started (tick %ss)", tick_s)
+        # Report emails run beside the scheduler (under the same lock, so only one worker sends them).
+        from . import mailer
+        mail_task = asyncio.create_task(mailer.run_forever())  # noqa: F841 - kept alive for the process
         while True:
             try:
                 await tick(tasks)

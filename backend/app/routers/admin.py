@@ -17,7 +17,7 @@ from ..config import get_settings, now_local
 from ..db import SessionLocal, get_session
 from ..models import (
     CATEGORIES, ROLES, AlertLog, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
-    PollRun, PollSchedule, PollSwitch,
+    PollRun, PollSchedule, PollSwitch, RecipientList,
     ScheduleRun, UserPlantAccess,
 )
 from ..plant_keys import encrypt, hint as key_hint
@@ -735,12 +735,15 @@ class ScheduleIn(BaseModel):
     jitter_s: int = Field(20, ge=0, le=600)
     valid_from: date | None = None
     valid_to: date | None = None
+    # Recipient lists emailed the report after each retrieval of this schedule.
+    recipient_list_ids: list[int] = []
 
     @model_validator(mode="after")
     def check(self):
         self.name = self.name.strip()
         if not self.name:
             raise ValueError("Give the schedule a name")
+        self.recipient_list_ids = sorted(set(self.recipient_list_ids or []))
         if self.plants is not None:
             self.plants = sorted({p.strip().lower() for p in self.plants if p.strip()})
             if not self.plants:
@@ -855,17 +858,32 @@ async def _schedule_fields(s: AsyncSession, body: ScheduleIn) -> dict:
         if unknown:
             raise HTTPException(400, f"Unknown plant {unknown[0].upper()}")
         data["plant_ids"] = sorted(ids[m] for m in body.plants)
+    if body.recipient_list_ids:
+        found = set((await s.execute(select(RecipientList.id).where(
+            RecipientList.id.in_(body.recipient_list_ids)))).scalars().all())
+        missing = [i for i in body.recipient_list_ids if i not in found]
+        if missing:
+            raise HTTPException(400, "A chosen recipient list no longer exists; reload the page")
+    data["recipient_list_ids"] = body.recipient_list_ids or None
     return data
 
 
+def _mark_new_lists(sc: PollSchedule, old_ids: list[int] | None):
+    """A newly paired list gets only retrievals queued from now on, never ones that ran before."""
+    if set(sc.recipient_list_ids or []) - set(old_ids or []):
+        sc.email_since = now_local()
+
+
 def _audit_view(sc: PollSchedule, names: dict[int, str]) -> dict:
-    return {k: v for k, v in schedule_out(sc, names).items() if k not in ("next_runs", "in_force", "priority")}
+    return {k: v for k, v in schedule_out(sc, names).items()
+            if k not in ("next_runs", "in_force", "priority", "email_since")}
 
 
 @router.post("/schedules", status_code=201)
 async def create_schedule(body: ScheduleIn, admin: AppUser = Depends(require_admin),
                           s: AsyncSession = Depends(get_session)):
     sc = PollSchedule(updated_at=now_local(), updated_by=admin.id, **await _schedule_fields(s, body))
+    _mark_new_lists(sc, None)
     s.add(sc)
     await s.flush()
     await audit(s, admin, "schedule.create", "poll_schedule", sc.id, None, body.model_dump())
@@ -882,8 +900,10 @@ async def update_schedule(sid: int, body: ScheduleIn, admin: AppUser = Depends(r
         raise HTTPException(404, "Schedule not found")
     names, _ = await _plant_maps(s)
     before = _audit_view(sc, names)
+    old_lists = list(sc.recipient_list_ids or [])
     for k, v in (await _schedule_fields(s, body)).items():
         setattr(sc, k, v)
+    _mark_new_lists(sc, old_lists)
     sc.updated_at, sc.updated_by = now_local(), admin.id
     await audit(s, admin, "schedule.update", "poll_schedule", sid, before, body.model_dump())
     await s.commit()

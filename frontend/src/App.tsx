@@ -10,6 +10,7 @@ import { PlantsList, PlantForm } from "./pages/PlantsAdmin";
 import Inspect from "./pages/Inspect";
 import PollNow from "./pages/PollNow";
 import Reports from "./pages/Reports";
+import { EmailLog, RecipientLists } from "./pages/Recipients";
 import Icon from "./Icon";
 import Tour, { HelpMenu } from "./Tour";
 
@@ -102,6 +103,8 @@ export default function App() {
   else if (page === "admin" && isAdmin && arg === "users") body = <AdminUsers />;
   else if (page === "admin" && isAdmin && arg === "schedules") body = <AdminSchedules />;
   else if (page === "admin" && isAdmin && arg === "audit") body = <AdminAudit />;
+  else if (page === "admin" && isAdmin && arg === "recipients")
+    body = sub === "log" ? <EmailLog key={route} query={query} /> : <RecipientLists />;
   else body = <Fleet key={query} isAdmin={isAdmin} query={query} />;
 
   const link = (href: string, label: string, icon: string) => {
@@ -127,6 +130,7 @@ export default function App() {
           {isAdmin && link("#/admin/plants", "Plants", "sun")}
           {isAdmin && link("#/admin/users", "Users", "users")}
           {isAdmin && link("#/admin/schedules", "Schedules", "clock")}
+          {isAdmin && link("#/admin/recipients", "Email reports", "mail")}
           {isAdmin && link("#/admin/audit", "Audit", "list")}
         </nav>
         <div className="who">

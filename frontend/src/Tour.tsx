@@ -89,6 +89,13 @@ const STEPS: Step[] = [
       The list is in priority order, and <b>Which schedule governs each plant</b> shows the schedule used for every plant and API.</p>,
   },
   {
+    title: "Email reports",
+    admin: true, route: "#/admin/recipients", target: [nav("#/admin/recipients")],
+    body: () => <p>Recipient lists, each with a running code (RL-001, RL-002 ..), a name, one or more email addresses and the report it receives.
+      Pair lists with schedules on the Schedules page: after every <b>scheduled</b> retrieval (not Retrieve now) each paired list is emailed that
+      submission's report in the client template, with a summary of the problems. <b>Sent emails</b> logs every email, with retries and Resend.</p>,
+  },
+  {
     title: "Audit",
     admin: true, route: "#/admin/audit", target: [nav("#/admin/audit")],
     body: () => <p>A record of every admin change: who changed what and when, with the values before and after.</p>,

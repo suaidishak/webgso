@@ -1,5 +1,6 @@
 # Local beta: docker compose up --build   then open http://localhost:8080
 # Offline demo against simulated plants: SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
+# Report emails: see them at http://localhost:8025 (Mailpit). Set SMTP_* in .env to send real email.
 # Same, with a 120-plant fleet:  SEED_MOCK_FLEET=120 SEED_BASE_URL=http://mockplants:9000 docker compose --profile mock up --build
 services:
   db:
@@ -22,6 +23,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://gso:gso@db:5432/gso
       SEED_BASE_URL: ${SEED_BASE_URL:-https://ws3.gedine.work}
       SEED_MOCK_FLEET: ${SEED_MOCK_FLEET:-0}
+      # Report emails go to the local Mailpit catcher (http://localhost:8025) unless .env sets a real server.
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURITY: ${SMTP_SECURITY:-none}
     depends_on: { db: { condition: service_healthy } }
     ports: ["8000:8000"]
 
@@ -33,7 +38,17 @@ services:
       DATABASE_URL: postgresql+asyncpg://gso:gso@db:5432/gso
       SEED_BASE_URL: ${SEED_BASE_URL:-https://ws3.gedine.work}
       SEED_MOCK_FLEET: ${SEED_MOCK_FLEET:-0}
+      # Report emails go to the local Mailpit catcher (http://localhost:8025) unless .env sets a real server.
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURITY: ${SMTP_SECURITY:-none}
     depends_on: { db: { condition: service_healthy } }
+    restart: unless-stopped
+
+  # Local mail catcher: every report email lands here instead of real inboxes. Open http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.33
+    ports: ["8025:8025", "1025:1025"]
     restart: unless-stopped
 
   web:

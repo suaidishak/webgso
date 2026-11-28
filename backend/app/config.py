@@ -37,6 +37,22 @@ class Settings(BaseSettings):
     # Offline demo: when > 0 and the database has no plants, seed this many simulated plants
     # (spread over regions) instead of the 8 pilots. Use with SEED_BASE_URL pointing at mockplants.
     seed_mock_fleet: int = 0
+    # Report emails after scheduled retrievals. Empty SMTP_HOST = email off (emails are logged as failed).
+    # Local docker compose points this at Mailpit (http://localhost:8025), which catches every email.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_security: str = "starttls"  # starttls | ssl | none
+    smtp_timeout_s: int = 30
+    mail_from: str = "GSO Solar Data Platform <noreply@gso.local>"
+    mail_reply_to: str = ""
+    # Address of the web app, for the links in emails.
+    public_base_url: str = "http://localhost:8080"
+    # A failed email is tried again after these minutes, then marked failed.
+    email_retry_minutes: str = "1,5,15,60"
+    # Wait at most this long for a scheduled retrieval's slow plants before emailing what arrived.
+    email_wait_minutes: int = 45
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
 
 

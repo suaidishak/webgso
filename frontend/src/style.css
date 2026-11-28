@@ -612,3 +612,22 @@ table.coverage td { white-space: nowrap; }
 .gov.paused { text-decoration: line-through; text-decoration-color: var(--muted); }
 table.schedules td:nth-child(2) { min-width: 150px; }
 table.schedules td:nth-child(5) { white-space: nowrap; }
+
+/* Email reports: recipient lists, SMTP card, sent-email log */
+.ok-text { color: var(--ok); }
+.amber-text { color: var(--minor); }
+.field textarea { color: var(--text); width: 100%; resize: vertical; min-height: 90px; }
+.chips.wide-chips { max-width: none; }
+.dim-badge { opacity: .55; text-decoration: line-through; }
+.smtp-card { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.smtp-row { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.smtp-row > div:first-child { flex: 1 1 360px; display: flex; flex-direction: column; gap: 4px; }
+.smtp-test { display: flex; gap: 8px; flex-wrap: wrap; }
+.smtp-test input { width: 230px; max-width: 100%; }
+.empty-card { text-align: center; padding: 28px 16px; }
+.empty-card p { margin: 4px 0; }
+table.recipients tr.dim td { opacity: .6; }
+table.recipients td, table.email-log td { vertical-align: top; }
+table.email-log tr.open td { background: var(--hover); }
+table.email-log tr.detail-row td { background: var(--hover); padding-top: 4px; display: table-cell; }
+table.email-log tr.detail-row td > div { margin: 3px 0; }

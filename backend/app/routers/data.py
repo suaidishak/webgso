@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import soap
 from .. import validation as v
-from ..auth import current_user, plant_for_user, visible_plant_ids
+from ..auth import current_user, plant_for_user, sees_all, visible_plant_ids
 from ..config import now_local
 from ..db import get_session
 from ..switches import Switches, load_switches, off_reason
@@ -52,12 +52,12 @@ async def list_plants(brief: bool = False, user: AppUser = Depends(current_user)
         return [{"mnemonic": m, "name": n, "region": r, "status": st, "is_simulated": sim} for m, n, r, st, sim in rows]
     plants = (await s.execute(select(Plant).where(Plant.id.in_(ids)).order_by(Plant.mnemonic))).scalars().all()
     sw = await load_switches(s)
-    return [plant_out(p, user.role == "gso_admin", sw) for p in plants]
+    return [plant_out(p, sees_all(user), sw) for p in plants]
 
 
 @router.get("/plants/{mnem}")
 async def get_plant(mnem: str, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
-    return plant_out(await plant_for_user(mnem, user, s), user.role == "gso_admin", await load_switches(s))
+    return plant_out(await plant_for_user(mnem, user, s), sees_all(user), await load_switches(s))
 
 
 # Fleet board: how bad each endpoint state is, for problem-first sorting.
@@ -514,8 +514,8 @@ async def alerts(open_only: bool = Query(False, alias="open"), plant: str | None
 
 @router.post("/alerts/{alert_id}/ack")
 async def ack_alert(alert_id: int, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
-    if user.role not in ("gso_admin", "gso_user"):
-        raise HTTPException(403, "Only GSO staff acknowledge alerts")
+    if not sees_all(user):
+        raise HTTPException(403, "Only GSO and SAE staff acknowledge alerts")
     a = await s.get(AlertLog, alert_id)
     if a is None:
         raise HTTPException(404, "Not found")
@@ -531,8 +531,8 @@ class AckIn(BaseModel):
 @router.post("/alerts/ack")
 async def ack_alerts(body: AckIn, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
     """Acknowledge several alerts at once (those already acknowledged are left as they were)."""
-    if user.role not in ("gso_admin", "gso_user"):
-        raise HTTPException(403, "Only GSO staff acknowledge alerts")
+    if not sees_all(user):
+        raise HTTPException(403, "Only GSO and SAE staff acknowledge alerts")
     res = await s.execute(update(AlertLog).where(AlertLog.id.in_(body.ids), AlertLog.acknowledged_at.is_(None))
                           .values(acknowledged_by=user.id, acknowledged_at=now_local()))
     await s.commit()

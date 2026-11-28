@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, setToken, getToken, User } from "./api";
+import { api, canOperate, setToken, getToken, ROLE_LABEL, User } from "./api";
 import { Login, Register } from "./pages/Auth";
 import Fleet from "./pages/Fleet";
 import PlantPage from "./pages/Plant";
@@ -8,6 +8,7 @@ import Compliance from "./pages/Compliance";
 import { AdminUsers, AdminSchedules, AdminAudit } from "./pages/Admin";
 import { PlantsList, PlantForm } from "./pages/PlantsAdmin";
 import Inspect from "./pages/Inspect";
+import Account from "./pages/Account";
 import PollNow from "./pages/PollNow";
 import Reports from "./pages/Reports";
 import { EmailLog, RecipientLists } from "./pages/Recipients";
@@ -82,8 +83,10 @@ export default function App() {
   if (!user) {
     return route.startsWith("/register") ? <Register /> : <Login onLogin={loadMe} />;
   }
-  const isAdmin = user.role === "gso_admin";
-  const isGso = isAdmin || user.role === "gso_user";
+  // isAdmin: runs the platform (super admin and GSO). Only the super admin manages users.
+  const isAdmin = canOperate(user);
+  const isSuper = user.role === "super_admin";
+  const isGso = isAdmin;
   const [path, query = ""] = route.split("?");
   const [, page, arg, sub, sub2, sub3] = path.split("/");
 
@@ -92,6 +95,7 @@ export default function App() {
   else if (page === "attempt" && arg) body = <Inspect key={arg} id={arg} canPoll={isAdmin} />;
   else if (page === "alerts") body = <Alerts key={query} canAck={isGso} query={query} />;
   else if (page === "compliance") body = <Compliance key={query} query={query} />;
+  else if (page === "account") body = <Account user={user} />;
   else if (page === "reports") body = <Reports key={route} query={query} />;
   else if (page === "admin" && isAdmin && arg === "plants" && sub === "new") body = <PlantForm key="new" />;
   else if (page === "admin" && isAdmin && arg === "plants" && sub) body = <PlantForm key={sub} mnem={sub} />;
@@ -100,7 +104,7 @@ export default function App() {
     body = sub === "runs"
       ? <PollNow key={route} runId={sub2} />
       : <PollNow key={route} plant={sub || "all"} category={sub2 || "all"} autorun={sub3 === "run"} />;
-  else if (page === "admin" && isAdmin && arg === "users") body = <AdminUsers />;
+  else if (page === "admin" && isSuper && arg === "users") body = <AdminUsers me={user.id} />;
   else if (page === "admin" && isAdmin && arg === "schedules") body = <AdminSchedules />;
   else if (page === "admin" && isAdmin && arg === "audit") body = <AdminAudit />;
   else if (page === "admin" && isAdmin && arg === "recipients")
@@ -128,14 +132,15 @@ export default function App() {
           {isAdmin && <span className="nav-sep" aria-hidden="true" />}
           {isAdmin && link("#/admin/poll", "Retrieve now", "zap")}
           {isAdmin && link("#/admin/plants", "Plants", "sun")}
-          {isAdmin && link("#/admin/users", "Users", "users")}
+          {isSuper && link("#/admin/users", "Users", "users")}
           {isAdmin && link("#/admin/schedules", "Schedules", "clock")}
           {isAdmin && link("#/admin/recipients", "Email reports", "mail")}
           {isAdmin && link("#/admin/audit", "Audit", "list")}
         </nav>
         <div className="who">
-          <span className="name">{user.name}</span>
-          {user.role && <span className="role">{user.role.replace("_", " ")}</span>}
+          <a className="name" href="#/account" title="Your account and password">{user.name}</a>
+          {user.role && <span className="role" title={user.role === "plant_user" ? `Plants: ${(user.plants || []).map(p => p.toUpperCase()).join(", ") || "none assigned"}` : undefined}>
+            {ROLE_LABEL[user.role] || user.role}{user.role === "plant_user" && user.plants?.length ? ` · ${user.plants.length <= 3 ? user.plants.map(p => p.toUpperCase()).join(", ") : `${user.plants.length} plants`}` : ""}</span>}
           <button className="ghost theme-btn" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             title={theme === "dark" ? "Light theme" : "Dark theme"}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
           <HelpMenu showAtLogin={user.show_tour !== false} onTour={() => setTourOpen(true)} onToggleLogin={saveTourPref} />
@@ -143,7 +148,7 @@ export default function App() {
         </div>
       </header>
       <main id="main" ref={mainRef} tabIndex={-1}>{body}</main>
-      {tourOpen && <Tour user={user} isAdmin={isAdmin} isGso={isGso} onClose={closeTour} />}
+      {tourOpen && <Tour user={user} isAdmin={isAdmin} isSuper={isSuper} isGso={isGso} onClose={closeTour} />}
     </div>
   );
 }

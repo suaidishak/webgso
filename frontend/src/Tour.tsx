@@ -14,6 +14,7 @@ type Step = {
   /** CSS selectors tried in order; the first visible match is highlighted. None = centred bubble. */
   target?: string[];
   admin?: boolean;
+  superOnly?: boolean;
 };
 
 const nav = (href: string) => `header nav a[href="${href}"]`;
@@ -29,7 +30,7 @@ const STEPS: Step[] = [
   {
     title: "Fleet board",
     route: "#/", target: [nav("#/")],
-    body: w => <p>Your home page. It lists {w.isGso ? "every plant in the fleet" : "the plants assigned to your organisation"} with
+    body: w => <p>Your home page. It lists {w.isGso ? "every plant in the fleet" : "only the plants assigned to you"} with
       the latest state of each API: Rolling, Day-ahead, Week-ahead, 4-months and MMF. Green means the last submission was valid.</p>,
   },
   {
@@ -49,7 +50,7 @@ const STEPS: Step[] = [
     title: "Alerts",
     route: "#/alerts", target: [nav("#/alerts")],
     body: w => <p>The alert log records every problem GSO found while retrieving: a plant not answering, a late submission or data breaking a rule.
-      Filter by plant, region, API or rule. {w.isGso ? "GSO staff can acknowledge alerts once they are being handled." : "Alerts clear on their own once the plant sends valid data again."}</p>,
+      Filter by plant, region, API or rule. {w.isGso ? "GSO staff acknowledge alerts once they are being handled." : "Alerts clear on their own once the plant sends valid data again."}</p>,
   },
   {
     title: "Compliance",
@@ -78,8 +79,9 @@ const STEPS: Step[] = [
   },
   {
     title: "Users",
-    admin: true, route: "#/admin/users", target: [nav("#/admin/users")],
-    body: () => <p>Approve new sign-ups, set each person's role (GSO admin, GSO user or LSS user) and choose which plants an LSS user can see.</p>,
+    superOnly: true, route: "#/admin/users", target: [nav("#/admin/users")],
+    body: () => <p>Only SAE Malaysia's super admins see this page. Add people by email or approve sign-ups, and set each person's role:
+      <b> Super admin</b> (manages users), <b>GSO</b> (sees every plant and runs the platform) or <b>Plant user</b> (sees only the plant acronyms you pick, one or more, read-only).</p>,
   },
   {
     title: "Schedules",
@@ -127,10 +129,10 @@ function findTarget(sels?: string[]): HTMLElement | null {
   return null;
 }
 
-export default function Tour({ user, isAdmin, isGso, onClose }: {
-  user: User; isAdmin: boolean; isGso: boolean; onClose: (dontShow: boolean) => void;
+export default function Tour({ user, isAdmin, isSuper, isGso, onClose }: {
+  user: User; isAdmin: boolean; isSuper: boolean; isGso: boolean; onClose: (dontShow: boolean) => void;
 }) {
-  const steps = STEPS.filter(s => !s.admin || isAdmin);
+  const steps = STEPS.filter(s => (!s.admin || isAdmin) && (!s.superOnly || isSuper));
   const [i, setI] = useState(0);
   const [dontShow, setDontShow] = useState(user.show_tour === false);
   const [rect, setRect] = useState<Rect | null>(null);

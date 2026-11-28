@@ -3,13 +3,14 @@ from datetime import time
 
 from sqlalchemy import select, text
 
-from .auth import hash_password
+from .auth import SUPER_ADMIN, hash_password
 from .config import get_settings, now_local
 from .db import Base, SessionLocal, engine
 from .models import (
     AppUser, ComplianceDeadline, Organisation, Plant, PlantEndpoint, PollSchedule,
 )
 
+SAE_ORG = "SAE Malaysia"  # owns the app; its super admins manage users
 PILOT_PLANTS = ["kmls", "mals", "kals", "lmms", "bdws", "sids", "skns", "bkhs"]
 # Offline demo at fleet scale (SEED_MOCK_FLEET=120): simulated plants spread over these regions.
 MOCK_REGIONS = [("nrt", "Northern"), ("cen", "Central"), ("sth", "Southern"), ("ecs", "East Coast")]
@@ -105,6 +106,11 @@ UPGRADES = [
     "ALTER TABLE recipient_list ADD COLUMN IF NOT EXISTS include_simulated BOOLEAN NOT NULL DEFAULT false",
     # The SEED_MOCK_FLEET demo plants (nrt001, cen002 ..) are simulated too.
     "UPDATE plant SET is_simulated = true WHERE NOT is_simulated AND mnemonic ~ '^(nrt|cen|sth|ecs)[0-9]{3}$'",
+    # 28 Nov 2026 multi-tenant roles: SAE Malaysia (super admin) owns the app, GSO sees everything,
+    # plant users see only their plants. Old role names carry over: the admin becomes super admin.
+    "UPDATE app_user SET role = 'super_admin' WHERE role = 'gso_admin'",
+    "UPDATE app_user SET role = 'gso' WHERE role = 'gso_user'",
+    "UPDATE app_user SET role = 'plant_user' WHERE role = 'lss_user'",
 ]
 
 
@@ -131,10 +137,25 @@ async def seed():
             s.add(gso)
             await s.flush()
 
-        if not (await s.execute(select(AppUser).where(AppUser.role == "gso_admin"))).first():
-            s.add(AppUser(email=cfg.admin_email.lower(), name="GSO Admin", organisation_id=gso.id,
-                          password_hash=hash_password(cfg.admin_password), status="active", role="gso_admin",
-                          created_at=now_local(), approved_at=now_local()))
+        sae = (await s.execute(select(Organisation).where(Organisation.name == SAE_ORG))).scalar_one_or_none()
+        if sae is None:
+            sae = Organisation(name=SAE_ORG, type="SAE")
+            s.add(sae)
+            await s.flush()
+
+        admin = (await s.execute(select(AppUser).where(AppUser.email == cfg.admin_email.lower()))).scalar_one_or_none()
+        if not (await s.execute(select(AppUser).where(AppUser.role == SUPER_ADMIN))).first():
+            if admin is None:
+                s.add(AppUser(email=cfg.admin_email.lower(), name="SAE Admin", organisation_id=sae.id,
+                              password_hash=hash_password(cfg.admin_password), status="active", role=SUPER_ADMIN,
+                              created_at=now_local(), approved_at=now_local()))
+            else:  # never lock everyone out of user management
+                admin.role, admin.status = SUPER_ADMIN, "active"
+        # The bootstrap admin was created under GSO before SAE Malaysia owned the app.
+        if admin is not None and admin.role == SUPER_ADMIN and admin.organisation_id == gso.id:
+            admin.organisation_id = sae.id
+            if admin.name == "GSO Admin":
+                admin.name = "SAE Admin"
 
         if not (await s.execute(select(Plant))).first():
             base = cfg.seed_base_url.rstrip("/")

@@ -641,3 +641,11 @@ table.email-log tr.detail-row td > div { margin: 3px 0; }
 .soap-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px 10px; margin-top: 6px; }
 .soap-fields .field { margin: 0; }
 .sim-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Users page (super admin) and account */
+.user-tools { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.user-tools input[type=search] { flex: 1 1 260px; min-width: 0; }
+.temp-pw { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; border-color: var(--ok); }
+.temp-pw code { font-size: 15px; padding: 2px 8px; margin: 0 8px; background: var(--raised); border-radius: 4px; user-select: all; }
+.who a.name { color: inherit; text-decoration: none; }
+.who a.name:hover { text-decoration: underline; }

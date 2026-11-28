@@ -53,7 +53,7 @@ async def register(body: RegisterIn, s: AsyncSession = Depends(get_session)):
     s.add(AppUser(email=email, name=body.name.strip(), organisation_id=org.id,
                   password_hash=hash_password(body.password), status="pending", created_at=now_local()))
     await s.commit()
-    return {"status": "pending", "message": "Registered. A GSO admin must approve your account before you can log in."}
+    return {"status": "pending", "message": "Registered. SAE Malaysia must approve your account before you can log in."}
 
 
 @router.post("/login")
@@ -95,3 +95,19 @@ async def set_tour(body: TourIn, user: AppUser = Depends(current_user), s: Async
     u.show_tour = body.show
     await s.commit()
     return {"show_tour": u.show_tour}
+
+
+class PasswordIn(BaseModel):
+    current: str
+    new: str = Field(min_length=10, max_length=200)
+
+
+@router.put("/me/password")
+async def change_password(body: PasswordIn, user: AppUser = Depends(current_user), s: AsyncSession = Depends(get_session)):
+    """Change your own password (for example after the super admin gave you a temporary one)."""
+    u = await s.get(AppUser, user.id)
+    if not verify_password(body.current, u.password_hash):
+        raise HTTPException(400, "Your current password is wrong")
+    u.password_hash = hash_password(body.new)
+    await s.commit()
+    return {"ok": True}

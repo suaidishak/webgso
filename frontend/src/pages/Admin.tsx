@@ -4,14 +4,45 @@ import Icon, { Skeleton, Spinner } from "../Icon";
 import { Pager, PlantPicker, plantsLabel, regionsOf, useDebounced, usePlantIndex } from "../components";
 import type { RecipientList } from "./Recipients";
 
-function UserRow({ u, onSaved }: { u: User; onSaved: () => void }) {
-  const [role, setRole] = useState(u.role || (u.organisation_type === "GSO" ? "gso_user" : "lss_user"));
+/* ---------------------------------------------------------------- users (super admin only)
+   SAE Malaysia's super admins decide each email's role: Super admin (manages users), GSO (sees every
+   plant and runs the platform) or Plant user (sees only the plant acronyms picked here, read-only). */
+
+const ROLE_OPTIONS = [
+  { value: "gso", label: "GSO", help: "Sees every plant. Runs the platform: plants, schedules, Retrieve now, email reports. Can't manage users." },
+  { value: "plant_user", label: "Plant user", help: "Sees only the plant acronyms you pick (one or more): their APIs, submissions, alerts, compliance and reports. Read-only." },
+  { value: "super_admin", label: "Super admin", help: "SAE Malaysia. Everything GSO can do, plus this Users page." },
+];
+const roleHelp = (r: string) => ROLE_OPTIONS.find(o => o.value === r)?.help || "";
+
+function TempPassword({ who, pw, onClose }: { who: string; pw: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="card temp-pw" role="status">
+      <div>Temporary password for <b>{who}</b>: <code className="mono">{pw}</code>
+        <button className="ghost small-btn" onClick={() => { navigator.clipboard?.writeText(pw).then(() => setCopied(true), () => {}); }}>{copied ? "Copied" : "Copy"}</button>
+        <button className="ghost small-btn" onClick={onClose}>Done</button></div>
+      <div className="small muted">It is shown only once. Send it to them privately; they can change it under their name at the top right.</div>
+    </div>
+  );
+}
+
+function UserRow({ u, me, onSaved, onPassword }: { u: User; me: number; onSaved: () => void; onPassword: (who: string, pw: string) => void }) {
+  const [role, setRole] = useState(u.role || (u.organisation_type === "GSO" ? "gso" : "plant_user"));
   const [sel, setSel] = useState<string[]>(u.plants || []);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState("");
+  const self = u.id === me;
   const save = async (status: string, label: string) => {
     setErr(""); setBusy(label);
-    try { await api(`/admin/users/${u.id}`, { method: "PUT", body: { role, plants: role === "lss_user" ? sel : [], status } }); onSaved(); }
+    try { await api(`/admin/users/${u.id}`, { method: "PUT", body: { role, plants: role === "plant_user" ? sel : [], status } }); onSaved(); }
+    catch (e: any) { setErr(e.message); }
+    setBusy("");
+  };
+  const reset = async () => {
+    if (!confirm(`Give ${u.email} a new temporary password? Their current password stops working.`)) return;
+    setErr(""); setBusy("Reset");
+    try { const r = await api<{ temporary_password: string }>(`/admin/users/${u.id}/reset-password`, { method: "POST" }); onPassword(u.email, r.temporary_password); }
     catch (e: any) { setErr(e.message); }
     setBusy("");
   };
@@ -19,39 +50,107 @@ function UserRow({ u, onSaved }: { u: User; onSaved: () => void }) {
     <button className={cls} disabled={!!busy} onClick={() => save(status, label)}>{busy === label ? <><Spinner />{label}</> : label}</button>;
   return (
     <tr>
-      <td><b>{u.name}</b><div className="small muted">{u.email}</div></td>
-      <td>{u.organisation}<div className="small muted">{u.organisation_type}</div></td>
+      <td><b>{u.name}</b>{self && <span className="muted small"> (you)</span>}<div className="small muted">{u.email}</div></td>
+      <td>{u.organisation}<div className="small muted">{u.last_login_at ? `Last login ${fmt(u.last_login_at)}` : "Never logged in"}</div></td>
       <td><span className={`badge ${u.status === "active" ? "green" : u.status === "pending" ? "amber" : ""}`}>{u.status}</span></td>
-      <td><select value={role} aria-label={`Role for ${u.name}`} onChange={e => setRole(e.target.value)}>
-        <option value="gso_admin">GSO admin</option><option value="gso_user">GSO user</option><option value="lss_user">LSS user</option>
+      <td><select value={role} disabled={self} aria-label={`Role for ${u.name}`} title={roleHelp(role)} onChange={e => setRole(e.target.value)}>
+        {ROLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select></td>
-      <td>{role === "lss_user" ? (
-        <PlantPicker value={sel} onChange={setSel} allowAll={false} allLabel="Choose plants" label={`Plants for ${u.name}`} />
+      <td>{role === "plant_user" ? (
+        <PlantPicker value={sel} onChange={setSel} allowAll={false} allLabel="Choose plant acronyms" label={`Plant acronyms for ${u.name}`} />
       ) : <span className="muted small">All plants</span>}</td>
       <td className="actions">
         {u.status === "pending" && btn("active", "Approve")}
         {u.status === "active" && btn("active", "Save", "ghost")}
-        {u.status === "active" && btn("disabled", "Disable", "ghost danger")}
+        {u.status === "active" && !self && btn("disabled", "Disable", "ghost danger")}
         {u.status === "disabled" && btn("active", "Re-enable", "ghost")}
+        {u.status !== "pending" && <button className="ghost" disabled={!!busy} onClick={reset} title="Give this user a new temporary password">{busy === "Reset" ? <><Spinner />Reset</> : "Reset password"}</button>}
         {err && <div className="error small">{err}</div>}
       </td>
     </tr>
   );
 }
 
-export function AdminUsers() {
+function NewUser({ onClose, onCreated }: { onClose: () => void; onCreated: (who: string, pw: string) => void }) {
+  const [f, setF] = useState({ name: "", email: "", organisation: "", role: "plant_user" });
+  const [plants, setPlants] = useState<string[]>([]);
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const set = (k: string, v: string) => setF(x => ({ ...x, [k]: v }));
+  const save = async () => {
+    setErr(""); setSaving(true);
+    try {
+      const r = await api<{ temporary_password: string }>("/admin/users", { method: "POST", body: {
+        ...f, organisation: f.organisation.trim() || null, plants: f.role === "plant_user" ? plants : [] } });
+      onCreated(f.email.toLowerCase(), r.temporary_password);
+    } catch (e: any) { setErr(e.message); }
+    setSaving(false);
+  };
+  const ready = f.name.trim().length >= 2 && /\S+@\S+\.\S+/.test(f.email) && (f.role !== "plant_user" || plants.length > 0);
+  return (
+    <div className="modal" onClick={() => !saving && onClose()}>
+      <div className="card wide-modal" role="dialog" aria-modal="true" aria-labelledby="nu-title" onClick={e => e.stopPropagation()}>
+        <h3 id="nu-title">Add user</h3>
+        <p className="small muted" style={{ margin: 0 }}>The account is active straight away with a temporary password, shown once after you add it.</p>
+        <div className="form-grid">
+          <label className="field"><span>Name</span><input value={f.name} autoFocus onChange={e => set("name", e.target.value)} /></label>
+          <label className="field"><span>Email</span><input type="email" value={f.email} placeholder="name@company.com" onChange={e => set("email", e.target.value)} /></label>
+          <label className="field"><span>Role</span>
+            <select value={f.role} onChange={e => set("role", e.target.value)}>
+              {ROLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+            <span className="small muted" style={{ fontWeight: 400 }}>{roleHelp(f.role)}</span></label>
+          <label className="field"><span>Organisation {f.role === "plant_user" ? "(plant owner company, optional)" : "(optional)"}</span>
+            <input value={f.organisation} placeholder={f.role === "gso" ? "GSO" : f.role === "super_admin" ? "SAE Malaysia" : "For example: ABC Solar Sdn Bhd"}
+              onChange={e => set("organisation", e.target.value)} /></label>
+          {f.role === "plant_user" && <div className="field wide"><span>Plant acronyms this user can see (one or more)</span>
+            <PlantPicker value={plants} onChange={setPlants} allowAll={false} allLabel="Choose plant acronyms" label="Plant acronyms" /></div>}
+        </div>
+        {err && <div className="error small" role="alert">{err}</div>}
+        <div className="actions">
+          <button disabled={saving || !ready} onClick={save}>{saving ? <><Spinner />Adding</> : "Add user"}</button>
+          <button className="ghost" disabled={saving} onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function AdminUsers({ me }: { me: number }) {
   const [users, setUsers] = useState<User[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [pw, setPw] = useState<{ who: string; pw: string } | null>(null);
+  const [q, setQ] = useState("");
+  const [roleF, setRoleF] = useState("");
   const load = () => api<User[]>("/admin/users").then(setUsers);
   useEffect(() => { load(); }, []);
   if (!users) return <Skeleton rows={6} />;
   const pending = users.filter(u => u.status === "pending").length;
+  const ql = q.trim().toLowerCase();
+  const shown = users.filter(u => (!roleF || (roleF === "pending" ? u.status === "pending" : u.role === roleF)) &&
+    (!ql || [u.name, u.email, u.organisation || "", ...(u.plants || [])].some(x => x.toLowerCase().includes(ql))));
+  const count = (r: string) => users.filter(u => u.role === r).length;
   return (
     <>
-      <div className="title-row"><h2>Users</h2>{pending > 0 && <span className="badge amber">{pending} waiting for approval</span>}</div>
+      <div className="title-row"><h2>Users</h2>{pending > 0 && <span className="badge amber">{pending} waiting for approval</span>}
+        <button className="push-right" onClick={() => setAdding(true)}><Icon name="plus" />Add user</button></div>
+      <p className="muted small">Only SAE Malaysia's super admins see this page. <b>GSO</b> sees every plant and runs the platform. A <b>plant user</b> sees
+        only the plant acronyms picked for them (one or more), read-only: their APIs, submissions, alerts, compliance and reports. Role changes apply at once.</p>
+      {pw && <TempPassword who={pw.who} pw={pw.pw} onClose={() => setPw(null)} />}
+      <div className="user-tools">
+        <input type="search" placeholder="Search name, email, organisation or plant" aria-label="Search users" value={q} onChange={e => setQ(e.target.value)} />
+        <select value={roleF} aria-label="Filter by role" onChange={e => setRoleF(e.target.value)}>
+          <option value="">All roles ({users.length})</option>
+          {ROLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label} ({count(o.value)})</option>)}
+          <option value="pending">Waiting for approval ({pending})</option>
+        </select>
+      </div>
       <div className="table-wrap"><table>
-        <thead><tr><th>User</th><th>Organisation</th><th>Status</th><th>Role</th><th>Plants</th><th></th></tr></thead>
-        <tbody>{[...users].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending")).map(u => <UserRow key={u.id + u.status} u={u} onSaved={load} />)}</tbody>
+        <thead><tr><th>User</th><th>Organisation</th><th>Status</th><th>Role</th><th>Plant acronyms</th><th></th></tr></thead>
+        <tbody>{[...shown].sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"))
+          .map(u => <UserRow key={`${u.id}-${u.status}-${u.role}-${(u.plants || []).join()}`} u={u} me={me} onSaved={load} onPassword={(who, p) => setPw({ who, pw: p })} />)}
+          {!shown.length && <tr><td colSpan={6} className="muted">No users match.</td></tr>}</tbody>
       </table></div>
+      {adding && <NewUser onClose={() => setAdding(false)} onCreated={(who, p) => { setAdding(false); setPw({ who, pw: p }); load(); }} />}
     </>
   );
 }

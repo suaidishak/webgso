@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, CATS, CAT_LABEL, fmt, User } from "../api";
+import { api, canOperate, CATS, CAT_LABEL, fmt, User } from "../api";
 import LineChart from "../LineChart";
 import Icon, { Skeleton, Spinner } from "../Icon";
 
@@ -97,7 +97,7 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
         {plant.name && plant.name.toLowerCase() !== plant.mnemonic && <span className="muted">{plant.name}</span>}
         <span className="actions">
           <a className="button ghost" href={`#/reports?plants=${plant.mnemonic}&category=${cat}${cat === "mmf" ? "&view=mmf" : ""}`}><Icon name="table" />Reports</a>
-          {user.role === "gso_admin" && <a className="button ghost" href={`#/admin/plants/${plant.mnemonic}`}>Edit plant</a>}
+          {canOperate(user) && <a className="button ghost" href={`#/admin/plants/${plant.mnemonic}`}>Edit plant</a>}
         </span>
       </div>
       <div className="tabs" role="tablist" aria-label="Endpoint">
@@ -107,7 +107,7 @@ export default function PlantPage({ mnem, user }: { mnem: string; user: User }) 
         <div className="endpoint">
           <code>{ep?.url}</code>
           {ep && !ep.enabled && <span className="badge">not retrieved{ep.note ? `: ${ep.note}` : ""}</span>}
-          {user.role === "gso_admin" && ep && <button onClick={pollNow} disabled={busy}>{busy ? <><Spinner />Retrieving…</> : <><Icon name="zap" />Retrieve now</>}</button>}
+          {canOperate(user) && ep && <button onClick={pollNow} disabled={busy}>{busy ? <><Spinner />Retrieving…</> : <><Icon name="zap" />Retrieve now</>}</button>}
         </div>
         {pollErr && <div className="error" role="alert">{pollErr}</div>}
         <div key={tick}>{cat === "mmf" ? <Mmf mnem={mnem} /> : <Forecast mnem={mnem} cat={cat} />}</div>

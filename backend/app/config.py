@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Encrypts plant API keys at rest. Set it once and keep it: changing it makes stored keys unreadable.
     # If empty, a key is derived from JWT_SECRET (fine for local use, not for production).
     plant_key_secret: str = ""
-    # Bootstrap admin, created on first start if no gso_admin exists.
+    # Bootstrap admin, created on first start if no super admin exists (SAE Malaysia).
     admin_email: str = "admin@gso.local"
     admin_password: str = "admin12345"
     # Base URL used when seeding the first 8 plants. Point it at the mock server for offline demos.

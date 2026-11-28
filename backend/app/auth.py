@@ -55,12 +55,23 @@ def require_role(*roles: str):
     return dep
 
 
-require_admin = require_role("gso_admin")
+SUPER_ADMIN, GSO, PLANT_USER = "super_admin", "gso", "plant_user"
+SEES_ALL = (SUPER_ADMIN, GSO)
+
+# Users page: SAE Malaysia's super admins only.
+require_super_admin = require_role(SUPER_ADMIN)
+# Running the platform (plants, schedules, Retrieve now, email reports, audit): super admin and GSO.
+# Plant users are read-only and never pass this.
+require_admin = require_role(SUPER_ADMIN, GSO)
+
+
+def sees_all(user: AppUser) -> bool:
+    return user.role in SEES_ALL
 
 
 async def visible_plant_ids(user: AppUser, s: AsyncSession) -> set[int]:
-    """GSO roles see every plant; LSS users only the plants assigned to them."""
-    if user.role in ("gso_admin", "gso_user"):
+    """Super admin and GSO see every plant; plant users only the plants assigned to them."""
+    if sees_all(user):
         return set((await s.execute(select(Plant.id))).scalars().all())
     return set((await s.execute(select(UserPlantAccess.plant_id).where(
         UserPlantAccess.user_id == user.id))).scalars().all())

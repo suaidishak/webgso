@@ -1,4 +1,4 @@
-"""gso_admin only: recipient lists, SMTP status and test sends, and the sent-email log.
+"""Super admin and GSO only: recipient lists, SMTP status and test sends, and the sent-email log.
 
 A recipient list has a running code (RL-001, RL-002 ..), a name and one or more email addresses, plus which
 report it receives (APIs and template options). Retrieval schedules are paired with lists; after each

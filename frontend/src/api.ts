@@ -4,6 +4,11 @@ export type User = {
   created_at?: string; approved_at?: string | null; last_login_at?: string | null; show_tour?: boolean;
 };
 
+/** super_admin: SAE Malaysia, owns the app and manages users. gso: sees every plant and runs the platform.
+    plant_user: sees only their assigned plants, read-only. */
+export const ROLE_LABEL: Record<string, string> = { super_admin: "Super admin", gso: "GSO", plant_user: "Plant user" };
+export const canOperate = (u: User | null) => u?.role === "super_admin" || u?.role === "gso";
+
 const KEY = "gso_token";
 export const getToken = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
 export const setToken = (t: string | null) => {

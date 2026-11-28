@@ -51,7 +51,7 @@ export function Login({ onLogin }: { onLogin: () => void }) {
         <label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
         {err && <div className="error" role="alert">{err}</div>}
         <button disabled={busy}>{busy ? <><Spinner />Signing in…</> : "Sign in"}</button>
-        <p className="muted small">No account? <a href="#/register">Register</a>. A GSO admin approves new accounts.</p>
+        <p className="muted small">No account? <a href="#/register">Register</a>. SAE Malaysia approves new accounts.</p>
       </form>
     </AuthShell>
   );

@@ -1,6 +1,8 @@
-"""gso_admin only: user approval, plant config, schedules, deadlines, audit log."""
+"""Running the platform: plant config, schedules, Retrieve now, deadlines, audit log (super admin and GSO),
+and user management (super admin only)."""
 import asyncio
 import logging
+import secrets
 import time as _time
 from datetime import date, time
 from typing import Literal
@@ -9,16 +11,16 @@ import httpx
 
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy import Text
 from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import require_admin
+from ..auth import GSO, PLANT_USER, SUPER_ADMIN, hash_password, require_admin, require_super_admin
 from ..config import get_settings, now_local
 from ..db import SessionLocal, get_session
 from ..models import (
-    CATEGORIES, ROLES, AlertLog, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Plant, PlantEndpoint, PollAttempt,
+    CATEGORIES, AlertLog, AppUser, AuditEvent, ComplianceDeadline, ComplianceFlag, Organisation, Plant, PlantEndpoint, PollAttempt,
     PollRun, PollSchedule, PollSwitch, RecipientList,
     ScheduleRun, UserPlantAccess,
 )
@@ -51,9 +53,16 @@ def _jsonable(d):
     return d.isoformat() if isinstance(d, (date, time)) else d
 
 
-# ---------------------------------------------------------------- users
+# ---------------------------------------------------------------- users (super admin only)
+# SAE Malaysia's super admins decide who is a super admin, who is GSO (sees every plant) and who is a
+# plant user (sees only the plant acronyms picked here, one or more). GSO and plant users never reach
+# these endpoints.
+ROLE_ORG = {SUPER_ADMIN: ("SAE Malaysia", "SAE"), GSO: ("GSO", "GSO")}
+ROLE_PATTERN = "^(super_admin|gso|plant_user)$"
+
+
 @router.get("/users")
-async def users(admin: AppUser = Depends(require_admin), s: AsyncSession = Depends(get_session)):
+async def users(admin: AppUser = Depends(require_super_admin), s: AsyncSession = Depends(get_session)):
     rows = (await s.execute(select(AppUser).order_by(AppUser.status != "pending", AppUser.created_at.desc()))
             ).scalars().all()
     access = (await s.execute(select(UserPlantAccess.user_id, Plant.mnemonic).join(
@@ -64,38 +73,117 @@ async def users(admin: AppUser = Depends(require_admin), s: AsyncSession = Depen
     return [user_out(u, sorted(by_user.get(u.id, []))) for u in rows]
 
 
-class ApproveIn(BaseModel):
-    role: str = Field(pattern="^(gso_admin|gso_user|lss_user)$")
+async def _plants_for(s: AsyncSession, role: str, mnemonics: list[str], status: str) -> list[Plant]:
+    """The plants a plant user is limited to; other roles see every plant and keep none."""
+    if role != PLANT_USER:
+        return []
+    want = {m.strip().lower() for m in mnemonics if m.strip()}
+    if not want and status == "active":
+        raise HTTPException(400, "Choose at least one plant acronym for a plant user")
+    plants = (await s.execute(select(Plant).where(Plant.mnemonic.in_(want)))).scalars().all() if want else []
+    missing = want - {p.mnemonic for p in plants}
+    if missing:
+        raise HTTPException(400, f"Unknown plant acronym: {', '.join(sorted(m.upper() for m in missing))}")
+    return list(plants)
+
+
+async def _org_id(s: AsyncSession, role: str, name: str | None) -> int | None:
+    name = (name or "").strip() or ROLE_ORG.get(role, (None, None))[0]
+    if not name:
+        return None
+    org = (await s.execute(select(Organisation).where(func.lower(Organisation.name) == name.lower()))
+           ).scalar_one_or_none()
+    if org is None:
+        org = Organisation(name=name, type=ROLE_ORG.get(role, (None, "LSS"))[1])
+        s.add(org)
+        await s.flush()
+    return org.id
+
+
+async def _keep_a_super_admin(s: AsyncSession, u: AppUser, role: str, status: str):
+    if u.role == SUPER_ADMIN and u.status == "active" and (role != SUPER_ADMIN or status != "active"):
+        others = (await s.execute(select(func.count()).select_from(AppUser).where(
+            AppUser.role == SUPER_ADMIN, AppUser.status == "active", AppUser.id != u.id))).scalar_one()
+        if not others:
+            raise HTTPException(400, "Keep at least one active super admin")
+
+
+def _temp_password() -> str:
+    return secrets.token_urlsafe(9)  # 12 characters
+
+
+class UserIn(BaseModel):
+    role: str = Field(pattern=ROLE_PATTERN)
     plants: list[str] = []
     status: str = Field("active", pattern="^(active|disabled|pending)$")
 
 
+class NewUserIn(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    email: EmailStr
+    role: str = Field(pattern=ROLE_PATTERN)
+    plants: list[str] = []
+    organisation: str | None = Field(None, max_length=200)
+
+
+@router.post("/users", status_code=201)
+async def create_user(body: NewUserIn, admin: AppUser = Depends(require_super_admin),
+                      s: AsyncSession = Depends(get_session)):
+    """Add an account directly (no self-registration). Returns a temporary password, shown once."""
+    email = body.email.lower()
+    if (await s.execute(select(AppUser).where(AppUser.email == email))).first():
+        raise HTTPException(409, "An account with this email already exists")
+    plants = await _plants_for(s, body.role, body.plants, "active")
+    pw = _temp_password()
+    u = AppUser(email=email, name=body.name.strip(), organisation_id=await _org_id(s, body.role, body.organisation),
+                password_hash=hash_password(pw), status="active", role=body.role, created_at=now_local(),
+                approved_at=now_local(), approved_by=admin.id)
+    s.add(u)
+    await s.flush()
+    s.add_all(UserPlantAccess(user_id=u.id, plant_id=p.id) for p in plants)
+    await audit(s, admin, "user.create", "app_user", u.id, None,
+                {"email": email, "role": u.role, "plants": sorted(p.mnemonic for p in plants)})
+    await s.commit()
+    return {"id": u.id, "temporary_password": pw}
+
+
 @router.put("/users/{user_id}")
-async def set_user(user_id: int, body: ApproveIn, admin: AppUser = Depends(require_admin),
+async def set_user(user_id: int, body: UserIn, admin: AppUser = Depends(require_super_admin),
                    s: AsyncSession = Depends(get_session)):
     """Approve (status active), change role/plants, or disable an account."""
     u = await s.get(AppUser, user_id)
     if u is None:
         raise HTTPException(404, "User not found")
-    if u.id == admin.id and (body.status != "active" or body.role != "gso_admin"):
+    if u.id == admin.id and (body.status != "active" or body.role != SUPER_ADMIN):
         raise HTTPException(400, "You cannot demote or disable your own account")
-    if body.role == "lss_user" and not body.plants and body.status == "active":
-        raise HTTPException(400, "An LSS user needs at least one plant")
-    before = {"role": u.role, "status": u.status}
-    plants = (await s.execute(select(Plant).where(Plant.mnemonic.in_([p.lower() for p in body.plants])))
-              ).scalars().all()
-    if len(plants) != len(set(body.plants)):
-        raise HTTPException(400, "Unknown plant in list")
+    await _keep_a_super_admin(s, u, body.role, body.status)
+    plants = await _plants_for(s, body.role, body.plants, body.status)
+    before_plants = (await s.execute(select(Plant.mnemonic).join(UserPlantAccess, UserPlantAccess.plant_id == Plant.id)
+                                     .where(UserPlantAccess.user_id == u.id))).scalars().all()
+    before = {"role": u.role, "status": u.status, "plants": sorted(before_plants)}
     if u.status == "pending" and body.status == "active":
         u.approved_at, u.approved_by = now_local(), admin.id
     u.role, u.status = body.role, body.status
     await s.execute(delete(UserPlantAccess).where(UserPlantAccess.user_id == u.id))
-    if body.role == "lss_user":
-        s.add_all(UserPlantAccess(user_id=u.id, plant_id=p.id) for p in plants)
+    s.add_all(UserPlantAccess(user_id=u.id, plant_id=p.id) for p in plants)
     await audit(s, admin, "user.update", "app_user", u.id, before,
                 {"role": u.role, "status": u.status, "plants": sorted(p.mnemonic for p in plants)})
     await s.commit()
     return {"ok": True}
+
+
+@router.post("/users/{user_id}/reset-password")
+async def reset_password(user_id: int, admin: AppUser = Depends(require_super_admin),
+                         s: AsyncSession = Depends(get_session)):
+    """Give the user a new temporary password, shown once to the super admin."""
+    u = await s.get(AppUser, user_id)
+    if u is None:
+        raise HTTPException(404, "User not found")
+    pw = _temp_password()
+    u.password_hash = hash_password(pw)
+    await audit(s, admin, "user.reset_password", "app_user", u.id)
+    await s.commit()
+    return {"temporary_password": pw}
 
 
 # ---------------------------------------------------------------- plants

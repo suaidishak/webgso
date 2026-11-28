@@ -16,7 +16,10 @@ from .db import Base
 
 CATEGORIES = ("rolling", "dayahead", "weekahead", "fourmonthsahead", "mmf")
 FORECAST_CATEGORIES = ("rolling", "dayahead", "weekahead", "fourmonthsahead")
-ROLES = ("gso_admin", "gso_user", "lss_user")
+# super_admin: SAE Malaysia, owns the app, the only role that manages users.
+# gso: the main tenant, sees every plant and runs the platform (plants, schedules, Retrieve now, email reports).
+# plant_user: a plant owner, sees only the plants assigned to them, read-only.
+ROLES = ("super_admin", "gso", "plant_user")
 
 
 # ---------------------------------------------------------------- organisations and users
@@ -24,7 +27,7 @@ class Organisation(Base):
     __tablename__ = "organisation"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
-    type: Mapped[str] = mapped_column(String(10))  # GSO | LSS
+    type: Mapped[str] = mapped_column(String(10))  # SAE | GSO | LSS (plant owners)
 
 
 class AppUser(Base):

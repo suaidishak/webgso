@@ -1,0 +1,25 @@
+/* Reports page extras (kept out of style.css). */
+.fmt-tabs { margin: 0; }
+.fmt-tabs button { gap: 6px; }
+.xl .frz { box-shadow: none; }
+.xl .frz-last { box-shadow: 2px 0 0 var(--line-strong); }
+.xl .sort.static { display: flex; align-items: center; height: 100%; padding: 0 8px; font-weight: 600; overflow: hidden; }
+.xl th.num .sort.static { justify-content: flex-end; }
+
+/* client template, styled like the client's workbook */
+.tpl { --tpl-green: #1f6f43; --tpl-blue: #0875c9; --tpl-info: #f4f8f2; --tpl-info-ink: #5d6d60; display: flex; flex-direction: column; gap: 0; }
+:root:not([data-theme="light"]) .tpl { --tpl-info: color-mix(in srgb, #1f6f43 16%, var(--panel)); --tpl-info-ink: color-mix(in srgb, #9fc7ad 80%, var(--muted)); }
+.tpl-title { background: var(--tpl-green); color: #fff; font-weight: 700; font-size: 17px; padding: 8px 12px; border-radius: var(--radius) var(--radius) 0 0; letter-spacing: .01em; }
+.tpl-info-wrap { overflow-x: auto; border: 1px solid var(--line-strong); border-top: 0; }
+.tpl-info { border-collapse: collapse; width: auto; font-size: 13px; }
+.tpl-info th, .tpl-info td { background: var(--tpl-info); border: 1px solid var(--line-strong); padding: 4px 12px; white-space: nowrap; text-align: left; }
+.tpl-info th { color: var(--tpl-info-ink); font-size: 11.5px; font-weight: 700; text-transform: none; letter-spacing: 0; position: static; }
+.tpl-gen { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; padding: 6px 12px; font-size: 13px; border: 1px solid var(--line-strong); border-top: 0; margin-bottom: 10px; }
+.tpl .xl thead tr.xl-head th { background: var(--tpl-blue); color: #fff; }
+.tpl .xl thead tr.xl-head th .sort.static { justify-content: center; }
+.tpl .xl thead tr.xl-head th.num .sort.static { justify-content: center; }
+.tpl-tabs { display: flex; gap: 0; overflow-x: auto; border: 1px solid var(--line-strong); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); background: var(--raised); padding: 0 6px; }
+.tpl-tabs button { background: transparent; color: var(--muted); border: 0; border-radius: 0; border-top: 3px solid transparent; min-height: 32px; padding: 4px 14px; font-weight: 500; white-space: nowrap; font-size: 12.5px; }
+.tpl-tabs button:hover { background: var(--hover); color: var(--text); filter: none; }
+.tpl-tabs button.on { background: var(--panel); color: var(--tpl-green); border-top-color: var(--tpl-green); font-weight: 650; }
+:root:not([data-theme="light"]) .tpl-tabs button.on { color: #7fd4a1; border-top-color: #7fd4a1; }

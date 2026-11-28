@@ -3,8 +3,12 @@ import { api, download, CATS, CAT_LABEL } from "../api";
 import Icon, { Skeleton, Spinner } from "../Icon";
 import Sheet, { SheetCol, cellText } from "../Sheet";
 import { PlantPicker } from "../components";
+import ReportTemplate from "./ReportTemplate";
+import "./reports.css";
 
-/* Reports: any selection of polled data as a spreadsheet-style table, and the same selection as CSV.
+/* Reports. Two formats:
+   - Client template (default): the client's DDQ / MMF templates, viewed online and downloaded as Excel.
+   - Table view: any selection of polled data as a spreadsheet-style table, and the same selection as CSV.
    The filters live in the URL (#/reports?plants=bdws&category=dayahead&range=24h...), so a report can be
    bookmarked or shared, and other pages link here with filters already set. */
 
@@ -35,13 +39,15 @@ function myt(offsetHours = 0): string {
   return d.toLocaleString("sv-SE", { timeZone: "Asia/Kuala_Lumpur", hour12: false }).replace(" ", "T").slice(0, 16);
 }
 
-type F = { view: string; plants: string[]; category: string; range: string; from: string; to: string;
+type F = { fmt: "template" | "table"; view: string; plants: string[]; category: string; range: string; from: string; to: string;
   latest: boolean; attempt: string; run: string; cf: Record<string, string> };
 
 function readQuery(q: string): F {
   const p = new URLSearchParams(q);
   const scoped = p.get("attempt") || p.get("run");
+  const fmt = p.get("fmt") === "table" || (!p.get("fmt") && (p.get("view") || scoped)) ? "table" : "template";
   return {
+    fmt,
     view: p.get("view") || "points",
     plants: (p.get("plants") || "").split(",").filter(Boolean),
     category: p.get("category") || "all",
@@ -56,7 +62,8 @@ function readQuery(q: string): F {
 /** The URL of this report page (no defaults), so it stays short. */
 function pageQuery(f: F): string {
   const p = new URLSearchParams();
-  if (f.view !== "points") p.set("view", f.view);
+  if (f.fmt === "table") p.set("fmt", "table");
+  if (f.fmt === "table" && f.view !== "points") p.set("view", f.view);
   if (f.plants.length) p.set("plants", f.plants.join(","));
   if (f.category !== "all") p.set("category", f.category);
   if (f.range === "custom") { if (f.from) p.set("from", f.from); if (f.to) p.set("to", f.to); }
@@ -64,7 +71,7 @@ function pageQuery(f: F): string {
   if (f.latest) p.set("latest", "1");
   if (f.attempt) p.set("attempt", f.attempt);
   if (f.run) p.set("run", f.run);
-  if (Object.keys(f.cf).length) p.set("cf", JSON.stringify(f.cf));
+  if (f.fmt === "table" && Object.keys(f.cf).length) p.set("cf", JSON.stringify(f.cf));
   return p.toString();
 }
 
@@ -110,6 +117,7 @@ export default function Reports({ query }: { query: string }) {
   }), [f, size, offset, sort]);
 
   useEffect(() => {
+    if (f.fmt !== "table") return;
     let live = true;
     setLoading(true); setErr("");
     const t = setTimeout(() => {
@@ -119,7 +127,8 @@ export default function Reports({ query }: { query: string }) {
         .finally(() => { if (live) setLoading(false); });
     }, 200);
     return () => { live = false; clearTimeout(t); };
-  }, [q]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, f.fmt]);
 
   const exportCsv = async () => {
     setBusy(true); setErr("");
@@ -146,22 +155,34 @@ export default function Reports({ query }: { query: string }) {
   };
 
   const viewInfo = VIEWS.find(v => v.id === f.view)!;
-  const apis: readonly string[] = f.view === "mmf" ? CATS.filter(c => c === "mmf") : f.view === "points" || f.view === "wide" ? CATS.filter(c => c !== "mmf") : CATS;
+  const isTpl = f.fmt === "template";
+  // The template always shows one API: forecasts in the DDQ layout, MMF in the MMF workbook.
+  const tplCat = f.category === "all" ? "dayahead" : f.category;
+  const tplQuery = apiQuery({ ...f, category: tplCat, cf: {}, view: tplCat === "mmf" ? "mmf" : "points" });
+  const apis: readonly string[] = isTpl ? CATS : f.view === "mmf" ? CATS.filter(c => c === "mmf") : f.view === "points" || f.view === "wide" ? CATS.filter(c => c !== "mmf") : CATS;
   const total = page?.total ?? 0;
   const last = Math.min(offset + size, total);
 
   return (
     <>
       <div className="title-row"><h2>Reports</h2>
-        <span className="muted small">Polled data as a table, filtered by plant, API and poll time. Download exactly what you see as CSV.</span>
+        <div className="tabs fmt-tabs" role="tablist" aria-label="Report format">
+          <button role="tab" aria-selected={isTpl} className={isTpl ? "on" : ""} onClick={() => set({ fmt: "template" })}>
+            <Icon name="table" />Client template</button>
+          <button role="tab" aria-selected={!isTpl} className={!isTpl ? "on" : ""} onClick={() => set({ fmt: "table" })}>
+            <Icon name="list" />Table view</button>
+        </div>
+        <span className="muted small">{isTpl
+          ? "The client's DDQ and MMF templates, online and as an Excel download."
+          : "Polled data as a table, filtered by plant, API and poll time. Download exactly what you see as CSV."}</span>
       </div>
 
       <div className="card report-filters">
         <div className="report-row">
           <div className="field"><span>Plants</span><PlantPicker value={f.plants} onChange={v => set({ plants: v })} /></div>
           <label className="field"><span>API</span>
-            <select value={apis.includes(f.category) ? f.category : "all"} onChange={e => setCategory(e.target.value)}>
-              {apis.length > 1 && <option value="all">{f.view === "points" || f.view === "wide" ? "All forecast APIs" : "All APIs"}</option>}
+            <select value={isTpl ? tplCat : apis.includes(f.category) ? f.category : "all"} onChange={e => (isTpl ? set({ category: e.target.value }) : setCategory(e.target.value))}>
+              {apis.length > 1 && !isTpl && <option value="all">{f.view === "points" || f.view === "wide" ? "All forecast APIs" : "All APIs"}</option>}
               {apis.map(c => <option key={c} value={c}>{CAT_LABEL[c]}</option>)}
             </select>
           </label>
@@ -178,7 +199,8 @@ export default function Reports({ query }: { query: string }) {
           </>}
           <label className="check-field">
             <input type="checkbox" checked={f.latest} onChange={e => set({ latest: e.target.checked })} />
-            Latest poll only <span className="muted small">(per plant and API, within the time range)</span>
+            {isTpl ? <>Latest submission only <span className="muted small">(each plant's latest poll in the time range)</span></>
+              : <>Latest poll only <span className="muted small">(per plant and API, within the time range)</span></>}
           </label>
         </div>
         {(f.attempt || f.run) && (
@@ -192,6 +214,7 @@ export default function Reports({ query }: { query: string }) {
         )}
       </div>
 
+      {isTpl ? <ReportTemplate query={tplQuery} fileHint="report.xlsx" /> : <>
       <div className="report-bar">
         <div className="tabs" role="tablist" aria-label="Report view">
           {VIEWS.map(v => <button key={v.id} role="tab" aria-selected={v.id === f.view} className={v.id === f.view ? "on" : ""}
@@ -236,6 +259,7 @@ export default function Reports({ query }: { query: string }) {
             } />
         </>
       ))}
+      </>}
     </>
   );
 }

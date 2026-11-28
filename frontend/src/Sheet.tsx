@@ -8,7 +8,7 @@ import Icon from "./Icon";
    The name box and formula bar show the active cell, and the status bar sums the selected numbers.
    Sorting and filtering run on the server, so they cover every row, not only the page on screen. */
 
-export type SheetCol = { key: string; label: string; type: "text" | "num" | "dt" | "bool" | "int" };
+export type SheetCol = { key: string; label: string; type: "text" | "num" | "dt" | "bool" | "int"; hint?: string | null };
 type Pos = { r: number; c: number };
 type Sel = { a: Pos; b: Pos };
 
@@ -44,10 +44,11 @@ function copyText(text: string) {
 
 const fmtNum = (n: number) => (Math.abs(n) >= 1e6 || Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined, { maximumFractionDigits: 4 }));
 
-export default function Sheet({ columns, rows, offset, storageKey, sort, onSort, filters, onFilter, loading, display, footer, cellLink }: {
+export default function Sheet({ columns, rows, offset, storageKey, sort = null, onSort, filters = {}, onFilter, loading, display, footer, cellLink, frozen = 1, freezeLabel }: {
   columns: SheetCol[]; rows: Record<string, any>[]; offset: number; storageKey: string;
-  sort: { key: string; desc: boolean } | null; onSort: (key: string) => void;
-  filters: Record<string, string>; onFilter: (key: string, value: string) => void;
+  sort?: { key: string; desc: boolean } | null; onSort?: (key: string) => void;
+  filters?: Record<string, string>; onFilter?: (key: string, value: string) => void;
+  frozen?: number; freezeLabel?: string;
   loading?: boolean; display?: (col: SheetCol, v: any) => string; footer?: ReactNode;
   cellLink?: (row: Record<string, any>, col: SheetCol) => { href: string; label: string } | null;
 }) {
@@ -164,7 +165,12 @@ export default function Sheet({ columns, rows, offset, storageKey, sort, onSort,
   const activeRow = active ? rows[active.r] : null;
   const activeVal = activeCol && activeRow ? cellText(activeRow[activeCol.key], activeCol.type) : "";
   const link = activeCol && activeRow && cellLink ? cellLink(activeRow, activeCol) : null;
-  const left1 = freeze ? ROWNUM_W : undefined;
+  // Frozen columns stay in view while scrolling sideways (like Excel's freeze panes).
+  const nFrozen = freeze ? Math.min(frozen, columns.length) : 0;
+  const lefts: number[] = [];
+  columns.slice(0, nFrozen).reduce((x, c, i) => { lefts[i] = x; return x + width(c); }, ROWNUM_W);
+  const frz = (i: number) => (i < nFrozen ? `frz${i === nFrozen - 1 ? " frz-last" : ""}` : "");
+  const fst = (i: number) => (i < nFrozen ? { left: lefts[i] } : undefined);
   const totalW = ROWNUM_W + columns.reduce((s, c) => s + width(c), 0);
 
   return (
@@ -174,10 +180,10 @@ export default function Sheet({ columns, rows, offset, storageKey, sort, onSort,
         <span className="xl-fx" aria-hidden="true">fx</span>
         <input className="xl-formula" readOnly value={activeVal} aria-label="Active cell value" onFocus={e => e.target.select()} />
         <span className="xl-tools">
-          <label className="check-field small"><input type="checkbox" checked={freeze} onChange={e => setFreeze(e.target.checked)} />Freeze first column</label>
+          <label className="check-field small"><input type="checkbox" checked={freeze} onChange={e => setFreeze(e.target.checked)} />{freezeLabel || (frozen > 1 ? `Freeze first ${frozen} columns` : "Freeze first column")}</label>
           <button className="ghost small-btn" onClick={() => doCopy(true, "Copied with headers")} disabled={!sel} title="Copy the selected cells with their column headers (Ctrl+C copies without)">Copy</button>
           <button className="ghost small-btn" onClick={resetWidths} title="Reset column widths">Reset widths</button>
-          {Object.values(filters).some(Boolean) && <button className="ghost small-btn" onClick={() => columns.forEach(c => filters[c.key] && onFilter(c.key, ""))}>Clear filters</button>}
+          {onFilter && Object.values(filters).some(Boolean) && <button className="ghost small-btn" onClick={() => columns.forEach(c => filters[c.key] && onFilter!(c.key, ""))}>Clear filters</button>}
           <button className="ghost small-btn" onClick={() => setFull(!full)} aria-pressed={full}>{full ? "Exit full screen" : "Full screen"}</button>
         </span>
       </div>
@@ -190,7 +196,7 @@ export default function Sheet({ columns, rows, offset, storageKey, sort, onSort,
             <tr className="xl-letters">
               <th className="xl-corner" onClick={() => nRows && setSel({ a: { r: 0, c: 0 }, b: { r: nRows - 1, c: nCols - 1 } })} title="Select all (Ctrl+A)" />
               {columns.map((c, i) => (
-                <th key={c.key} className={`${rect && i >= rect.c0 && i <= rect.c1 ? "hl" : ""} ${i === 0 && freeze ? "frz" : ""}`} style={i === 0 ? { left: left1 } : undefined}
+                <th key={c.key} className={`${rect && i >= rect.c0 && i <= rect.c1 ? "hl" : ""} ${frz(i)}`} style={fst(i)}
                   onClick={() => nRows && setSel({ a: { r: 0, c: i }, b: { r: nRows - 1, c: i } })}>{letter(i)}</th>
               ))}
             </tr>
@@ -199,25 +205,25 @@ export default function Sheet({ columns, rows, offset, storageKey, sort, onSort,
               {columns.map((c, i) => {
                 const on = sort?.key === c.key;
                 return (
-                  <th key={c.key} scope="col" className={`${NUMERIC.has(c.type) ? "num" : ""} ${i === 0 && freeze ? "frz" : ""}`} style={i === 0 ? { left: left1 } : undefined}
+                  <th key={c.key} scope="col" className={`${NUMERIC.has(c.type) ? "num" : ""} ${frz(i)}`} style={fst(i)} title={c.hint || undefined}
                     aria-sort={on ? (sort!.desc ? "descending" : "ascending") : "none"}>
-                    <button className="sort" onClick={() => onSort(c.key)} title={`${c.label}: click to sort (all rows)`}>
+                    {onSort ? <button className="sort" onClick={() => onSort(c.key)} title={`${c.label}: click to sort (all rows)`}>
                       <span className="lbl">{c.label}</span><span aria-hidden="true" className="sort-ind">{on ? (sort!.desc ? "▼" : "▲") : ""}</span>
-                    </button>
+                    </button> : <span className="sort static"><span className="lbl">{c.label}</span></span>}
                     <span className="xl-resize" onMouseDown={e => startResize(e, c)} onDoubleClick={() => autoFit(c)} title="Drag to resize, double-click to fit" />
                   </th>
                 );
               })}
             </tr>
-            <tr className="xl-filters">
+            {onFilter && (<tr className="xl-filters">
               <th className="xl-corner" title={HELP}><Icon name="list" size={12} /></th>
               {columns.map((c, i) => (
-                <th key={c.key} className={i === 0 && freeze ? "frz" : ""} style={i === 0 ? { left: left1 } : undefined}>
+                <th key={c.key} className={frz(i)} style={fst(i)}>
                   <FilterBox value={filters[c.key] || ""} placeholder={HINT[c.type] || HINT.text} label={`Filter ${c.label}`}
                     onChange={v => onFilter(c.key, v)} />
                 </th>
               ))}
-            </tr>
+            </tr>)}
           </thead>
           <tbody>
             {rows.map((r, ri) => (
@@ -228,10 +234,10 @@ export default function Sheet({ columns, rows, offset, storageKey, sort, onSort,
                   const v = r[c.key];
                   const isActive = active && active.r === ri && active.c === ci;
                   const cls = [NUMERIC.has(c.type) ? "num" : "", inSel(ri, ci) ? "sel" : "", isActive ? "act" : "",
-                    ci === 0 && freeze ? "frz" : "", c.type === "bool" ? (v ? "yes" : v === false ? "no" : "") : "",
+                    frz(ci), c.type === "bool" ? (v ? "yes" : v === false ? "no" : "") : "",
                     v === null || v === undefined || v === "" ? "empty" : ""].join(" ");
                   return (
-                    <td key={c.key} data-rc={`${ri}:${ci}`} className={cls} style={ci === 0 ? { left: left1 } : undefined}
+                    <td key={c.key} data-rc={`${ri}:${ci}`} className={cls} style={fst(ci)}
                       title={show(c, v)}
                       onMouseDown={e => {
                         if (e.button !== 0) return;

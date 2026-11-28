@@ -24,12 +24,14 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import current_user, visible_plant_ids
+from ..config import now_local
 from ..colfilter import py_match, sql_condition
+from .. import client_templates as ct
 from ..db import SessionLocal, get_session
 from ..flatten import ROW_KEY, flatten_text
 from ..models import CATEGORIES, AppUser, Plant, PollRun
@@ -168,7 +170,7 @@ async def _selection(f: Filters, user: AppUser, s: AsyncSession) -> tuple[str, d
         where.append("a.id = ANY(:run_ids)")
         params["run_ids"] = [r["attempt_id"] for r in (run.results or []) if r.get("attempt_id")]
     cols = """a.id, a.plant_id, p.mnemonic AS plant, a.category, a.started_at, a.raw_response_id, a.is_valid,
-              a.http_status, a.latency_ms, a.bytes, a.major_flags, a.minor_flags, a.error, a.url"""
+              a.http_status, a.latency_ms, a.bytes, a.major_flags, a.minor_flags, a.error, a.url, a.scheduled_for"""
     base = f"FROM poll_attempt a JOIN plant p ON p.id = a.plant_id WHERE {' AND '.join(where)}"
     if f.latest:
         sql = f"SELECT DISTINCT ON (a.plant_id, a.category) {cols} {base} " \
@@ -385,3 +387,56 @@ async def export_csv(f: Filters = Depends(filters), user: AppUser = Depends(curr
 
     return StreamingResponse(gen(), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="{_filename(f)}"'})
+
+
+# ---------------------------------------------------------------- client templates
+async def _template_sheets(f: Filters, user: AppUser, s: AsyncSession) -> tuple[str, list[ct.TSheet]]:
+    """The client's template for the chosen API: the DDQ layout for a forecast API, the MMF workbook for MMF."""
+    category = f.categories[0] if len(f.categories) == 1 else "dayahead"
+    if category == "mmf":
+        tf = Filters(**{**f.__dict__, "view": "mmf", "categories": ["mmf"]})
+        cte, params = await _selection(tf, user, s)
+        try:
+            return category, await ct.mmf_template(s, cte, params, f.start, f.end, not f.plants)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    tf = Filters(**{**f.__dict__, "view": "points", "categories": [category], "latest": f.latest})
+    cte, params = await _selection(tf, user, s)
+    return category, [await ct.forecast_template(s, cte, params, category, f.latest)]
+
+
+def _sheet_out(sh: ct.TSheet, offset: int = 0, limit: int | None = None) -> dict:
+    keys = [f"c{i}" for i in range(len(sh.columns))]
+    rows = sh.rows[offset:offset + limit] if limit else sh.rows
+    return {"name": sh.name, "title": sh.title, "info_headers": sh.info_headers, "info_values": sh.info_values,
+            "generated": sh.generated, "records": sh.records, "freeze_cols": sh.freeze_cols, "note": sh.note,
+            "columns": [{"key": k, "label": c.label, "type": c.type, "hint": c.hint} for k, c in zip(keys, sh.columns)],
+            "rows": [dict(zip(keys, r)) for r in rows]}
+
+
+@router.get("/template")
+async def template(f: Filters = Depends(filters), sheet: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=2000),
+                   offset: int = Query(0, ge=0), user: AppUser = Depends(current_user),
+                   s: AsyncSession = Depends(get_session)):
+    """One sheet of the client's template, one page of its rows, plus the list of sheets (workbook tabs)."""
+    category, sheets = await _template_sheets(f, user, s)
+    sh = sheets[min(sheet, len(sheets) - 1)]
+    return {"category": category, "sheets": [{"name": x.name, "records": x.records} for x in sheets],
+            "sheet": _sheet_out(sh, offset, limit), "total": sh.records}
+
+
+@router.get("/template.xlsx")
+async def template_xlsx(f: Filters = Depends(filters), user: AppUser = Depends(current_user),
+                        s: AsyncSession = Depends(get_session)):
+    """The client's template as an Excel workbook (the spreadsheet download)."""
+    category, sheets = await _template_sheets(f, user, s)
+    if category == "mmf":
+        first = f.start.strftime("%Y%m%d-%H%M") if f.start else now_local().strftime("%Y%m%d-%H%M")
+        name = f"LSS-MMF-Data-{first}.xlsx"
+    else:
+        sub = sheets[0].rows[0][0] if sheets[0].rows else None
+        stamp = datetime.strptime(sub, "%d/%m/%Y %H:%M:%S").strftime("%Y%m%d-%H%M") if sub else now_local().strftime("%Y%m%d-%H%M")
+        name = f"{ct.DATA_TYPE[category]}-{stamp}.xlsx"
+    return Response(ct.to_xlsx(sheets),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})

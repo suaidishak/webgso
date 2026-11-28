@@ -112,7 +112,11 @@ export default function App() {
     <div className="shell">
       <a className="skip" href="#main" onClick={e => { e.preventDefault(); mainRef.current?.focus(); }}>Skip to content</a>
       <header>
-        <div className="brand"><span className="sun" aria-hidden="true" />GSO Solar Data Platform <span className="beta">beta</span></div>
+        <a className="brand" href="#/" aria-label="GSO Solar Data Platform, home">
+          <img className="brand-mark" src="/brand/gso-mark.png" alt="" width={26} height={29} />
+          <span className="brand-text"><span className="brand-org">Grid System Operator</span><span className="brand-app">Solar Data Platform</span></span>
+          <span className="beta">beta</span>
+        </a>
         <nav aria-label="Main">
           {link("#/", "Fleet", "grid")}
           {link("#/alerts", "Alerts", "bell")}
